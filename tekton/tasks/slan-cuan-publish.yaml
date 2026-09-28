@@ -97,6 +97,28 @@ spec:
         (CRLF/newline-delimited 'Key: Value' lines or JSON object).
       type: string
       default: ""
+    - name: GITHUB_OSV_REPO
+      description: >-
+        GitHub repository (owner/name) to publish OSV records to, in addition
+        to Pulp. Leave empty to disable GitHub publication.
+      type: string
+      default: ""
+    - name: GITHUB_OSV_TOKEN
+      description: >-
+        Name of the Secret holding the GitHub token (key 'token') with write
+        access to GITHUB_OSV_REPO.
+      type: string
+      default: ""
+    - name: GITHUB_OSV_BRANCH
+      description: Branch of the OSV repository to commit records onto.
+      type: string
+      default: "main"
+    - name: GITHUB_OSV_PATH
+      description: >-
+        Directory prefix inside the OSV repository for records
+        (default: repository root).
+      type: string
+      default: ""
     - name: sourceDataArtifact
       description: Trusted Artifact URI of the extracted artifact directory from slan-cuan-extract.
       type: string
@@ -151,6 +173,12 @@ spec:
       description: >-
         Number of security metadata files skipped because their OSV record type
         did not match the target Pulp File repository.
+    - name: GITHUB_OSV_UPLOADED
+      description: Number of OSV records pushed to the GitHub OSV repository.
+    - name: GITHUB_OSV_COMMIT
+      description: >-
+        Commit SHA pushed to the GitHub OSV repository, or empty when GitHub
+        publication was disabled or introduced no change.
   stepTemplate:
     volumeMounts:
       - mountPath: /var/workdir
@@ -238,6 +266,18 @@ spec:
           value: $(params.PULP_MAX_TOTAL_TASK_TIMEOUT)
         - name: SLAN_CUAN_PUBLISH_PULP_CUSTOM_HEADERS
           value: $(params.PULP_CUSTOM_HEADERS)
+        - name: SLAN_CUAN_PUBLISH_GITHUB_OSV_REPO
+          value: $(params.GITHUB_OSV_REPO)
+        - name: SLAN_CUAN_PUBLISH_GITHUB_OSV_BRANCH
+          value: $(params.GITHUB_OSV_BRANCH)
+        - name: SLAN_CUAN_PUBLISH_GITHUB_OSV_PATH
+          value: $(params.GITHUB_OSV_PATH)
+        - name: SLAN_CUAN_PUBLISH_GITHUB_OSV_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: $(params.GITHUB_OSV_TOKEN)
+              key: token
+              optional: true
         - name: SLAN_CUAN_PUBLISH_PULP_USERNAME
           valueFrom:
             secretKeyRef:

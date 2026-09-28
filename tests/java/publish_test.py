@@ -3468,3 +3468,132 @@ def test_null_aliases_and_upstream_handled(tmp_path: Path) -> None:
     files = (sec_dir / "null_fields.json",)
     with pytest.raises(ValueError, match="not OSV, VEX, or SBOM"):
         _validate_security_metadata(files, ("CVE-2024-25710",))
+
+
+@patch("slan_cuan.java.publish.GitHubOsvClient")
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
+def test_publish_pushes_osv_to_github_alongside_pulp(
+    mock_maven_cls: Mock,
+    mock_file_cls: Mock,
+    mock_gh_cls: Mock,
+    tmp_path: Path,
+) -> None:
+    """OSV records are pushed to GitHub in addition to the Pulp File repo."""
+    artifact_dir = create_test_artifact_dir(
+        tmp_path, include_security_metadata=True
+    )
+    mock_maven = _make_ctx_mock()
+    mock_maven_cls.return_value = mock_maven
+    _setup_client_mock(mock_maven)
+    mock_file = _make_ctx_mock()
+    mock_file_cls.return_value = mock_file
+    _setup_file_client(mock_file)
+
+    mock_gh = Mock()
+    mock_gh.publish.return_value = "abc123"
+    mock_gh_cls.return_value = mock_gh
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "publish",
+            "--pulp-url",
+            "https://pulp.example.com",
+            "--pulp-repository",
+            "test-repo",
+            "--artifact-dir",
+            str(artifact_dir),
+            "--pulp-domain",
+            "lightwell",
+            "--pulp-username",
+            "testuser",
+            "--pulp-password",
+            "testpass",
+            "--pulp-file-repository",
+            "test-file-repo",
+            "--github-osv-repo",
+            "project-lightwell/lightwell-osv",
+            "--github-osv-token",
+            "ghp_secret",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    # Pulp file upload still happened.
+    mock_file.upload_content.assert_called_once()
+    # GitHub push happened with the same record set.
+    mock_gh_cls.assert_called_once()
+    assert mock_gh_cls.call_args.args[0] == "project-lightwell/lightwell-osv"
+    assert mock_gh_cls.call_args.args[1] == "ghp_secret"
+    mock_gh.publish.assert_called_once()
+    pushed_files = mock_gh.publish.call_args.args[0]
+    assert [p.name for p in pushed_files] == ["gav-index.osv.json"]
+    assert "GitHub OSV: pushed 1 record(s)" in result.output
+
+
+@patch("slan_cuan.java.publish.GitHubOsvClient")
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
+def test_publish_skips_github_when_not_configured(
+    mock_maven_cls: Mock,
+    mock_file_cls: Mock,
+    mock_gh_cls: Mock,
+    tmp_path: Path,
+) -> None:
+    """GitHub publication is skipped when repo/token are not provided."""
+    artifact_dir = create_test_artifact_dir(
+        tmp_path, include_security_metadata=True
+    )
+    mock_maven = _make_ctx_mock()
+    mock_maven_cls.return_value = mock_maven
+    _setup_client_mock(mock_maven)
+    mock_file = _make_ctx_mock()
+    mock_file_cls.return_value = mock_file
+    _setup_file_client(mock_file)
+
+    result = _run_publish_with_file_repo(artifact_dir, "test-file-repo")
+
+    assert result.exit_code == 0, result.output
+    mock_gh_cls.assert_not_called()
+
+
+@patch("slan_cuan.java.publish.PulpMavenClient")
+def test_publish_github_repo_without_token_errors(
+    mock_maven_cls: Mock, tmp_path: Path
+) -> None:
+    """--github-osv-repo without a token is a usage error."""
+    artifact_dir = create_test_artifact_dir(
+        tmp_path, include_security_metadata=True
+    )
+    mock_maven = _make_ctx_mock()
+    mock_maven_cls.return_value = mock_maven
+    _setup_client_mock(mock_maven)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "publish",
+            "--pulp-url",
+            "https://pulp.example.com",
+            "--pulp-repository",
+            "test-repo",
+            "--artifact-dir",
+            str(artifact_dir),
+            "--pulp-domain",
+            "lightwell",
+            "--pulp-username",
+            "testuser",
+            "--pulp-password",
+            "testpass",
+            "--pulp-file-repository",
+            "test-file-repo",
+            "--github-osv-repo",
+            "project-lightwell/lightwell-osv",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "must be set together" in result.output

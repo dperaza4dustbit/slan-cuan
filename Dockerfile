@@ -45,6 +45,7 @@ RUN echo "${RH_IT_CERT}" | base64 -d > /etc/pki/ca-trust/source/anchors/Current-
     && microdnf install -y \
         python3.12-pip \
         jq \
+        git \
         krb5-workstation \
     && curl -L https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl -o /usr/bin/kubectl \
     && chmod +x /usr/bin/kubectl \

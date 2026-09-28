@@ -50,6 +50,11 @@ Labels are also:
 | `--pulp-client-cert` | path | When `cert` | -- | Client certificate for entitlement cert auth |
 | `--pulp-client-key` | path | When `cert` | -- | Client key for entitlement cert auth |
 | `--upload-workers` | integer | No | `4` | Number of concurrent upload threads |
+| `--pulp-file-repository` | string | When OSV present | -- | Pulp File repository name for OSV/VEX upload |
+| `--github-osv-repo` | string | No | -- | GitHub repo (`owner/name`) to also publish OSV records to |
+| `--github-osv-token` | string | With `--github-osv-repo` | -- | Token with write access to the OSV repo |
+| `--github-osv-branch` | string | No | `main` | Branch to commit records onto |
+| `--github-osv-path` | string | No | repo root | Directory prefix inside the OSV repo |
 
 The `--insecure` flag is intended for development only. In production, use the global `--ca-cert` option for custom certificate authorities.
 
@@ -70,6 +75,33 @@ See [CLI Reference](cli.md#environment-variables) for naming conventions.
 | `--pulp-client-cert` | `SLAN_CUAN_PUBLISH_PULP_CLIENT_CERT` |
 | `--pulp-client-key` | `SLAN_CUAN_PUBLISH_PULP_CLIENT_KEY` |
 | `--upload-workers` | `SLAN_CUAN_PUBLISH_UPLOAD_WORKERS` |
+| `--pulp-file-repository` | `SLAN_CUAN_PUBLISH_PULP_FILE_REPOSITORY` |
+| `--github-osv-repo` | `SLAN_CUAN_PUBLISH_GITHUB_OSV_REPO` |
+| `--github-osv-token` | `SLAN_CUAN_PUBLISH_GITHUB_OSV_TOKEN` |
+| `--github-osv-branch` | `SLAN_CUAN_PUBLISH_GITHUB_OSV_BRANCH` |
+| `--github-osv-path` | `SLAN_CUAN_PUBLISH_GITHUB_OSV_PATH` |
+
+## Security Metadata (OSV) Publication
+
+Generated OSV/VEX records are published to two destinations:
+
+- **Pulp File repository** (`--pulp-file-repository`) — required whenever the
+  GAV index lists vulnerabilities or generated security metadata is present.
+  Records are routed by type against the repository name
+  (`osv-java-backport`/`osv-java-novel`); see the routing note in
+  `slan_cuan/publish.py`.
+- **GitHub repository** (`--github-osv-repo`, optional) — when set together
+  with `--github-osv-token`, the same filtered record set is committed and
+  pushed to the OSV git repository (e.g.
+  `project-lightwell/lightwell-osv`) as a single commit. This runs
+  **in addition to** the Pulp upload; leaving `--github-osv-repo` unset
+  disables it and preserves Pulp-only behavior.
+
+GitHub publication is idempotent: re-publishing records identical to the
+repository's current contents produces no commit. The pushed commit SHA and
+record count are recorded in `publish-result.json`
+(`github_osv_commit`, `github_osv_uploaded`) and exposed as the
+`GITHUB_OSV_COMMIT` and `GITHUB_OSV_UPLOADED` Tekton results.
 
 ## Authentication
 
@@ -132,7 +164,7 @@ Artifact uploads run concurrently using a thread pool sized by `--upload-workers
 
 ## Dry-Run Behavior
 
-With `--dry-run`, loads the extract result and discovers artifacts but does not upload. Displays the authentication type, distribution name, Pulp URL, artifact count, coordinate count, and each artifact path that would be uploaded.
+With `--dry-run`, loads the extract result and discovers artifacts but does not upload. Displays the authentication type, distribution name, Pulp URL, artifact count, coordinate count, and each artifact path that would be uploaded. When GitHub OSV publication is configured, it also reports the repository, branch, and number of records that would be pushed.
 
 ## Tekton Task
 
