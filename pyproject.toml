@@ -42,7 +42,7 @@ slan-cuan = "slan_cuan.cli:main"
 
 [project.optional-dependencies]
 kerberos = ["krbticket>=0.1.0", "requests>=2.28.0", "requests-gssapi>=1.2.0"]
-dev = ["ruff", "pytest", "poethepoet"]
+dev = ["ruff", "pytest", "poethepoet", "pyyaml"]
 
 #
 # Setuptools — package discovery
