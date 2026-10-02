@@ -6,6 +6,8 @@ does not collect it.
 
 from __future__ import annotations
 
+import ast
+import inspect
 import os
 from pathlib import Path
 
@@ -94,3 +96,33 @@ def resolve_env_var_to_param(
             f"{[m.name for m in matches]}"
         )
     return matches[0] if matches else None
+
+
+def written_tekton_result_names(command: click.Command) -> set[str]:
+    """AST-extract literal result-name strings from write_tekton_result(...).
+
+    Calls inside a click command's own callback function.
+
+    Scoped to exactly that function's source (via inspect.getsource, which
+    follows __wrapped__ through click's pass_obj/pass_context decorators),
+    not the whole module -- generate_security_metadata.py hosts two
+    commands, so a whole-module scan would merge their result names.
+
+    Assumption: only recognizes a literal string as the second positional
+    argument, matching every write_tekton_result call site today. A future
+    call site computing the name dynamically would be invisible here.
+    """
+    source = inspect.getsource(command.callback)
+    tree = ast.parse(source)
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "write_tekton_result"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+        ):
+            names.add(node.args[1].value)
+    return names
