@@ -29,6 +29,10 @@ spec:
       description: Disable TLS verification (true/false).
       type: string
       default: "false"
+    - name: CA_CERT_SECRET
+      description: K8s Secret name for custom CA cert (optional).
+      type: string
+      default: ""
     - name: CA_CERT_PATH
       description: Path to the CA certificate file inside the mounted secret.
       type: string
@@ -255,12 +259,19 @@ spec:
         - name: SLAN_CUAN_TEKTON_RESULTS_DIR
           value: /tekton/results
       volumeMounts:
+        - name: ca-cert
+          mountPath: /certs
+          readOnly: true
         - name: client-cert
           mountPath: /certs/client
           readOnly: true
   volumes:
     - name: workdir
       emptyDir: {}
+    - name: ca-cert
+      secret:
+        secretName: $(params.CA_CERT_SECRET)
+        optional: true
     - name: client-cert
       secret:
         secretName: $(params.PULP_CERT_SECRET)
