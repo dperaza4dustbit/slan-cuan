@@ -1,0 +1,17 @@
+name: Pipeline Fixture Freshness
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+jobs:
+  check-freshness:
+    name: Check vendored pipeline fixture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python3 scripts/check_pipeline_fixture_freshness.py
