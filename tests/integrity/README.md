@@ -73,6 +73,18 @@ a weekly schedule (non-blocking -- never gates a PR) specifically to catch
 staleness before it causes confusion. Its failure means "refresh the
 fixture," not "a contract broke."
 
+**Transitional state (as of this writing):** the vendored fixture reflects
+a `release-service-catalog` branch (`fix/LWLP-2376-remove-dead-radas-umb-host-param`,
+commit `2a3979f`) that has not yet merged to that repo's `development`
+branch. Until it does: the weekly freshness job will fail -- expected, not
+a bug. Do NOT "fix" that failure by refreshing the fixture from live
+`development` in the meantime -- doing so would re-introduce the dead
+`RADAS_UMB_HOST`/`trustedArtifactsDebug` wiring this branch removed.
+`pipeline_contract_test.py`'s blocking tests would catch that immediately
+(those params aren't declared on the tasks), but it's a confusing failure
+to debug without this context. Once the sibling PR merges, refresh the
+fixture normally and update this note/the header comment.
+
 **Known gap, out of scope:** several params are wired through
 `collect-task-params`'s positional `extractedValues[N]` array in the real
 pipeline (e.g. `PULP_URL: $(tasks.collect-task-params.results.extractedValues[0])`),

@@ -1,4 +1,4 @@
-"""Layer C: Tekton Task steps that read CLI output paths directly via raw.
+"""Layer C: Output path contract tests.
 
 Tekton Task steps that read CLI output paths directly via raw shell (not
 through another CLI call) must stay in sync with the real filename/dirname

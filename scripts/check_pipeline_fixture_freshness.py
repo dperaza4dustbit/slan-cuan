@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-"""Check whether the vendored release-service-catalog pipeline fixture is fresh.
+"""Freshness check for vendored release-service-catalog pipeline fixture.
 
-Check whether the vendored release-service-catalog pipeline fixture
-used by tests/integrity/pipeline_contract_test.py has drifted from the
-live file on GitHub.
-
-Non-blocking by design: run on a schedule (see
-.github/workflows/pipeline-fixture-freshness.yml), never as part of the
-PR-blocking test suite. A failure here means "refresh the fixture," not
-"a contract broke" -- see tests/integrity/README.md.
+Runs on a schedule to detect drift between the vendored fixture and the
+live file on GitHub. Non-blocking by design; a failure means "refresh
+the fixture," not "a contract broke" -- see tests/integrity/README.md.
 """
 
 from __future__ import annotations
@@ -56,6 +51,7 @@ def main() -> int:
         live_content = response.read().decode("utf-8")
 
     vendored_content = _strip_header_comment(FIXTURE_PATH.read_text())
+    live_content = _strip_header_comment(live_content)
 
     diff = list(
         difflib.unified_diff(

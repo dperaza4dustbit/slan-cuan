@@ -99,18 +99,16 @@ def resolve_env_var_to_param(
 
 
 def written_tekton_result_names(command: click.Command) -> set[str]:
-    """AST-extract literal result-name strings from write_tekton_result(...).
+    """Extract literal result-name strings from write_tekton_result calls.
 
-    Calls inside a click command's own callback function.
+    Parses the command's callback function via AST to find all calls to
+    write_tekton_result and extracts the literal result-name string
+    (second positional argument). Scoped to the callback's own source code,
+    not the whole module, so that generate_security_metadata.py's two
+    commands don't merge their result names.
 
-    Scoped to exactly that function's source (via inspect.getsource, which
-    follows __wrapped__ through click's pass_obj/pass_context decorators),
-    not the whole module -- generate_security_metadata.py hosts two
-    commands, so a whole-module scan would merge their result names.
-
-    Assumption: only recognizes a literal string as the second positional
-    argument, matching every write_tekton_result call site today. A future
-    call site computing the name dynamically would be invisible here.
+    Limitation: only recognizes literal string names; dynamic computation
+    would be invisible.
     """
     source = inspect.getsource(command.callback)
     tree = ast.parse(source)
