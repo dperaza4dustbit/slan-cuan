@@ -1,10 +1,9 @@
 # VENDORED FIXTURE -- pinned, not live-fetched.
 # Source: https://github.com/konflux-lightwell/release-service-catalog/blob/development/pipelines/managed/slan-cuan-release/slan-cuan-release.yaml
-# Copied from branch fix/LWLP-2376-remove-dead-radas-umb-host-param at commit
-# 2a3979f, created in Task 1 of docs/superpowers/plans/2026-10-02-slan-cuan-integrity-tests.md.
-# Update this header's commit reference once that PR merges to development.
-# See tests/integrity/README.md for how to refresh this fixture and what a
-# test failure here means (real break vs. stale fixture).
+# Copied from branch development at commit f3e1ace, refreshed via
+# scripts/update_pipeline_fixture.py on 2026-10-08.
+# See tests/integrity/README.md for how to refresh this fixture and
+# what a test failure here means (real break vs. stale fixture).
 ---
 apiVersion: tekton.dev/v1
 kind: Pipeline
@@ -73,25 +72,24 @@ spec:
       default: "ca-bundle.crt"
 
     # Catalog git params — for release-service-catalog tasks (collect-data, collect-task-params)
-    - name: catalogGitUrl
+    - name: taskGitUrl
       type: string
       description: The url to the git repo where release-service-catalog tasks are stored
       default: https://github.com/konflux-lightwell/release-service-catalog.git
-    - name: catalogGitRevision
+    - name: taskGitRevision
       type: string
-      description: The revision in the catalogGitUrl repo to be used
-      default: development
+      description: The revision in the taskGitUrl repo to be used
 
     # Pipeline infrastructure — for slan-cuan domain-specific tasks
-    - name: taskGitUrl
+    - name: slanCuanGitUrl
       type: string
       description: The url to the git repo where the slan-cuan tasks are stored
       default: https://github.com/konflux-lightwell/slan-cuan.git
 
-    - name: taskGitRevision
+    - name: slanCuanGitRevision
       type: string
-      description: The revision in the taskGitUrl repo to be used
-      default: main
+      description: The revision in the slanCuanGitUrl repo to be used
+      default: e615312e2ae487a9ffac144d6c3b6ef9e18b1f9e
 
     # Extract parameters
     - name: registry-auth-secret
@@ -107,7 +105,7 @@ spec:
       type: string
       default: "false"
     - name: discover-attachments
-      description: Unique artifact-types to discover attachments from the oras artifact.
+      description: Unique artifact-types to discover attachments from the oras artifact
       type: string
       default: "application/vnd.redhat.gav-index-build+json"
 
@@ -126,10 +124,10 @@ spec:
       default: "slan-cuan"
     - name: ignore-patterns
       description: |
-        Comma-separated regex patterns to exclude files from signing.
+        Comma-separated regex patterns to exclude files from signing
         Example: ".*-sources\\.jar$,.*-javadoc\\.jar$" excludes source and javadoc JARs.
         The default excludes checksum and signature files (.md5/.sha1/.sha256/.asc/.sigstore.json),
-        which do not need signing; excluded files are still published, only skipped during signing.
+        which do not need signing; excluded files are still published, only skipped during signing
       type: string
       default: ".*\\.md5$,.*\\.sha1$,.*\\.sha256$,.*\\.asc$,.*\\.sigstore\\.json$"
 
@@ -188,9 +186,9 @@ spec:
         resolver: "git"
         params:
           - name: url
-            value: $(params.catalogGitUrl)
+            value: $(params.taskGitUrl)
           - name: revision
-            value: $(params.catalogGitRevision)
+            value: $(params.taskGitRevision)
           - name: pathInRepo
             value: tasks/managed/collect-data/collect-data.yaml
       params:
@@ -230,9 +228,9 @@ spec:
         resolver: "git"
         params:
           - name: url
-            value: $(params.catalogGitUrl)
+            value: $(params.taskGitUrl)
           - name: revision
-            value: $(params.catalogGitRevision)
+            value: $(params.taskGitRevision)
           - name: pathInRepo
             value: tasks/managed/collect-task-params/collect-task-params.yaml
       runAfter:
@@ -269,9 +267,9 @@ spec:
         - name: sourceDataArtifact
           value: $(tasks.collect-data.results.sourceDataArtifact)
         - name: taskGitUrl
-          value: $(params.catalogGitUrl)
+          value: $(params.taskGitUrl)
         - name: taskGitRevision
-          value: $(params.catalogGitRevision)
+          value: $(params.taskGitRevision)
         - name: caTrustConfigMapName
           value: $(params.caTrustConfigMapName)
         - name: caTrustConfigMapKey
@@ -282,9 +280,9 @@ spec:
         resolver: "git"
         params:
           - name: url
-            value: $(params.catalogGitUrl)
+            value: $(params.taskGitUrl)
           - name: revision
-            value: $(params.catalogGitRevision)
+            value: $(params.taskGitRevision)
           - name: pathInRepo
             value: tasks/managed/collect-task-params/collect-task-params.yaml
       runAfter:
@@ -310,9 +308,9 @@ spec:
         - name: sourceDataArtifact
           value: $(tasks.collect-data.results.sourceDataArtifact)
         - name: taskGitUrl
-          value: $(params.catalogGitUrl)
+          value: $(params.taskGitUrl)
         - name: taskGitRevision
-          value: $(params.catalogGitRevision)
+          value: $(params.taskGitRevision)
         - name: caTrustConfigMapName
           value: $(params.caTrustConfigMapName)
         - name: caTrustConfigMapKey
@@ -323,9 +321,9 @@ spec:
         resolver: "git"
         params:
           - name: url
-            value: $(params.catalogGitUrl)
+            value: $(params.taskGitUrl)
           - name: revision
-            value: $(params.catalogGitRevision)
+            value: $(params.taskGitRevision)
           - name: pathInRepo
             value: hub/kubernetes-actions/kubernetes-actions.yaml
       params:
@@ -350,9 +348,9 @@ spec:
         resolver: "git"
         params:
           - name: url
-            value: https://github.com/konflux-lightwell/slan-cuan.git
+            value: $(params.slanCuanGitUrl)
           - name: revision
-            value: main
+            value: $(params.slanCuanGitRevision)
           - name: pathInRepo
             value: tekton/tasks/slan-cuan-extract.yaml
       runAfter:
@@ -377,9 +375,9 @@ spec:
         - name: caTrustConfigMapKey
           value: $(params.caTrustConfigMapKey)
         - name: catalogGitUrl
-          value: $(params.catalogGitUrl)
+          value: $(params.taskGitUrl)
         - name: catalogGitRevision
-          value: $(params.catalogGitRevision)
+          value: $(params.taskGitRevision)
 
     - name: verify-conforma
       taskRef:
@@ -416,9 +414,9 @@ spec:
         resolver: "git"
         params:
           - name: url
-            value: https://github.com/konflux-lightwell/slan-cuan.git
+            value: $(params.slanCuanGitUrl)
           - name: revision
-            value: main
+            value: $(params.slanCuanGitRevision)
           - name: pathInRepo
             value: tekton/tasks/slan-cuan-sign.yaml
       runAfter:
@@ -458,18 +456,18 @@ spec:
         - name: caTrustConfigMapKey
           value: $(params.caTrustConfigMapKey)
         - name: catalogGitUrl
-          value: $(params.catalogGitUrl)
+          value: $(params.taskGitUrl)
         - name: catalogGitRevision
-          value: $(params.catalogGitRevision)
+          value: $(params.taskGitRevision)
 
     - name: generate-security-metadata
       taskRef:
         resolver: "git"
         params:
           - name: url
-            value: https://github.com/konflux-lightwell/slan-cuan.git
+            value: $(params.slanCuanGitUrl)
           - name: revision
-            value: main
+            value: $(params.slanCuanGitRevision)
           - name: pathInRepo
             value: tekton/tasks/slan-cuan-generate-security-metadata.yaml
       runAfter:
@@ -499,17 +497,17 @@ spec:
         - name: caTrustConfigMapKey
           value: $(params.caTrustConfigMapKey)
         - name: catalogGitUrl
-          value: $(params.catalogGitUrl)
+          value: $(params.taskGitUrl)
         - name: catalogGitRevision
-          value: $(params.catalogGitRevision)
+          value: $(params.taskGitRevision)
     - name: publish
       taskRef:
         resolver: "git"
         params:
           - name: url
-            value: https://github.com/konflux-lightwell/slan-cuan.git
+            value: $(params.slanCuanGitUrl)
           - name: revision
-            value: main
+            value: $(params.slanCuanGitRevision)
           - name: pathInRepo
             value: tekton/tasks/slan-cuan-publish.yaml
       runAfter:
@@ -531,7 +529,7 @@ spec:
           value: $(tasks.collect-task-params.results.extractedValues[6])
         - name: INSECURE
           value: $(params.publish-insecure)
-        - name: CA_CERT_SECRET
+        - name: CA_CERT_PATH
           value: $(params.publish-ca-cert-secret)
         - name: PULP_FILE_REPOSITORY
           value: $(tasks.collect-task-params.results.extractedValues[7])
@@ -550,6 +548,6 @@ spec:
         - name: caTrustConfigMapKey
           value: $(params.caTrustConfigMapKey)
         - name: catalogGitUrl
-          value: $(params.catalogGitUrl)
+          value: $(params.taskGitUrl)
         - name: catalogGitRevision
-          value: $(params.catalogGitRevision)
+          value: $(params.taskGitRevision)

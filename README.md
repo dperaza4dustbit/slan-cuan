@@ -14,4 +14,5 @@ Packaged as a container image that provides both the Python CLI application and 
 | [Register](docs/register.md) | Upload SBOMs to Trustify for vulnerability cross-referencing |
 | [Publish](docs/publish.md) | Publish Maven artifacts to Pulp |
 | [Tekton Tasks](docs/tekton.md) | Tekton Task definitions and pipeline integration |
+| [Integrity Tests](tests/integrity/README.md) | CLI<->Tekton pipeline contract tests, vendored `release-service-catalog` fixture |
 | [Contributing](CONTRIBUTING.md) | Development setup, code style, adding subcommands |

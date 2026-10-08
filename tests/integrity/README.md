@@ -46,10 +46,14 @@ one, or rewires a task in `release-service-catalog`'s pipeline, this suite
 will **not** see it until the fixture is refreshed. It is not watching that
 repo live.
 
-**How to refresh the fixture:** copy the current
-`pipelines/managed/slan-cuan-release/slan-cuan-release.yaml` from
-`release-service-catalog` over the vendored path above, and update the
-header comment with the new source commit/revision.
+**How to refresh the fixture:** run `poe update-fixture` (or
+`python3 scripts/update_pipeline_fixture.py` directly) from the repo root.
+It pulls the current `slan-cuan-release.yaml` from `release-service-catalog`'s
+`development` branch, shows the diff, and rewrites the vendored copy with
+an updated header (source branch, commit, refresh date). Pass `--dry-run`
+to preview the diff without writing, or `--branch <name>` to pull from a
+different branch (e.g. to pin a fixture to a not-yet-merged
+`release-service-catalog` PR while a dependent change is in flight).
 
 **How to tell a real break from a stale fixture**, when
 `pipeline_contract_test.py` fails:
@@ -72,18 +76,6 @@ doing exactly what it's for.
 a weekly schedule (non-blocking -- never gates a PR) specifically to catch
 staleness before it causes confusion. Its failure means "refresh the
 fixture," not "a contract broke."
-
-**Transitional state (as of this writing):** the vendored fixture reflects
-a `release-service-catalog` branch (`fix/LWLP-2376-remove-dead-radas-umb-host-param`,
-commit `2a3979f`) that has not yet merged to that repo's `development`
-branch. Until it does: the weekly freshness job will fail -- expected, not
-a bug. Do NOT "fix" that failure by refreshing the fixture from live
-`development` in the meantime -- doing so would re-introduce the dead
-`RADAS_UMB_HOST`/`trustedArtifactsDebug` wiring this branch removed.
-`pipeline_contract_test.py`'s blocking tests would catch that immediately
-(those params aren't declared on the tasks), but it's a confusing failure
-to debug without this context. Once the sibling PR merges, refresh the
-fixture normally and update this note/the header comment.
 
 **Known gap, out of scope:** several params are wired through
 `collect-task-params`'s positional `extractedValues[N]` array in the real

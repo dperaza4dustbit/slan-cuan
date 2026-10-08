@@ -98,3 +98,7 @@ cmd = "python -m slan_cuan.cli"
 [tool.poe.tasks.check]
 help = "run all CI checks (lint, format, unit tests)"
 sequence = ["lint", "format-check", "test-unit"]
+
+[tool.poe.tasks.update-fixture]
+help = "refresh the vendored release-service-catalog pipeline fixture"
+cmd = "python scripts/update_pipeline_fixture.py"
