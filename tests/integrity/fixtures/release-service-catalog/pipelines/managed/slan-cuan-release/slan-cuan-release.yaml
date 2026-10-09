@@ -1,7 +1,7 @@
 # VENDORED FIXTURE -- pinned, not live-fetched.
-# Source: https://github.com/konflux-lightwell/release-service-catalog/blob/development/pipelines/managed/slan-cuan-release/slan-cuan-release.yaml
-# Copied from branch development at commit f3e1ace, refreshed via
-# scripts/update_pipeline_fixture.py on 2026-10-08.
+# Source: https://github.com/konflux-lightwell/release-service-catalog/blob/fix/publish-ca-cert-secret-wiring/pipelines/managed/slan-cuan-release/slan-cuan-release.yaml
+# Copied from branch fix/publish-ca-cert-secret-wiring at commit 0db1f58, refreshed via
+# scripts/update_pipeline_fixture.py on 2026-10-09.
 # See tests/integrity/README.md for how to refresh this fixture and
 # what a test failure here means (real break vs. stale fixture).
 ---
@@ -529,8 +529,10 @@ spec:
           value: $(tasks.collect-task-params.results.extractedValues[6])
         - name: INSECURE
           value: $(params.publish-insecure)
-        - name: CA_CERT_PATH
+        - name: CA_CERT_SECRET
           value: $(params.publish-ca-cert-secret)
+        - name: CA_CERT_PATH
+          value: /certs/ca.crt
         - name: PULP_FILE_REPOSITORY
           value: $(tasks.collect-task-params.results.extractedValues[7])
         - name: PULP_CUSTOM_HEADERS
