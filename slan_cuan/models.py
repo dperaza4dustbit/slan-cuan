@@ -11,6 +11,13 @@ EXTRACT_RESULT_FILENAME = "extract-result.json"
 PUBLISH_RESULT_FILENAME = "publish-result.json"
 REGISTER_RESULT_FILENAME = "register-result.json"
 
+# Directory names, relative to extract's output_dir, that extract.py writes
+# and that the slan-cuan-extract Task's prepare-source-data step copies by
+# hardcoded path. Kept here as the single source of truth so
+# output_contract_test.py can assert the Task stays in sync.
+EXTRACT_METADATA_DIRNAME = "metadata"
+EXTRACT_ATTACHMENTS_DIRNAME = "attachments"
+
 # Conventional directory name, relative to the artifact directory, that
 # generate-security-metadata writes OSV/VEX records into and that the publish
 # task unpacks securityMetadataArtifact into. Used as a fallback when the

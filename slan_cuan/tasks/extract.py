@@ -12,6 +12,8 @@ from pathlib import Path
 import click
 
 from slan_cuan.models import (
+    EXTRACT_ATTACHMENTS_DIRNAME,
+    EXTRACT_METADATA_DIRNAME,
     EXTRACT_RESULT_FILENAME,
     ExtractResult,
     GlobalContext,
@@ -241,7 +243,7 @@ def extract(
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Create metadata directory
-        metadata_dir = output_dir / "metadata"
+        metadata_dir = output_dir / EXTRACT_METADATA_DIRNAME
         metadata_dir.mkdir(exist_ok=True)
 
         # Save manifest
@@ -303,7 +305,7 @@ def extract(
         # Discover and pull attachments
         attachment_files: list[str] = []
         if artifact_types:
-            attachments_dir = output_dir / "attachments"
+            attachments_dir = output_dir / EXTRACT_ATTACHMENTS_DIRNAME
             attachments_dir.mkdir(exist_ok=True)
 
             for art_type in artifact_types:
@@ -389,7 +391,7 @@ def extract(
         write_tekton_result(
             ctx.tekton_results_dir,
             "ATTACHMENT_DIR",
-            "attachments" if attachment_files else "__EMPTY__",
+            EXTRACT_ATTACHMENTS_DIRNAME if attachment_files else "__EMPTY__",
         )
 
         # Log summary

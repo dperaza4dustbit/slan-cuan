@@ -20,6 +20,7 @@ import argparse
 import difflib
 import json
 import os
+import re
 import sys
 import urllib.request
 from datetime import datetime, timezone
@@ -65,6 +66,20 @@ def fetch_latest_commit(branch: str) -> str:
     return commits[0]["sha"][:7]
 
 
+_PROVENANCE_RE = re.compile(r"Copied from branch (\S+) at commit ([0-9a-f]+),")
+
+
+def _header_provenance(content: str) -> tuple[str, str] | None:
+    """Extract (branch, commit) from a fixture's vendoring header, if any.
+
+    Deliberately ignores the header's refresh date -- that always differs
+    run to run and isn't meaningful provenance to diff on.
+    """
+    header = content[: len(content) - len(_strip_header_comment(content))]
+    match = _PROVENANCE_RE.search(header)
+    return (match.group(1), match.group(2)) if match else None
+
+
 def build_header(branch: str, commit: str) -> str:
     """Build the vendoring header comment stamped with branch/commit/date."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -98,7 +113,7 @@ def main() -> int:
     new_content = build_header(args.branch, commit) + live_content
 
     old_content = FIXTURE_PATH.read_text() if FIXTURE_PATH.exists() else ""
-    diff = list(
+    body_diff = list(
         difflib.unified_diff(
             _strip_header_comment(old_content).splitlines(keepends=True)
             if old_content
@@ -108,16 +123,29 @@ def main() -> int:
             tofile=f"release-service-catalog@{args.branch}",
         )
     )
+    provenance_changed = _header_provenance(old_content) != (args.branch, commit)
 
-    if not diff:
+    if not body_diff and not provenance_changed:
         print("Fixture is already up to date with the live content.")
         return 0
 
-    print(f"Pulling {FIXTURE_REPO_PATH} from {REPO}@{args.branch} ({commit}):")
-    print("".join(diff))
+    if body_diff:
+        print(
+            f"Pulling {FIXTURE_REPO_PATH} from {REPO}@{args.branch} ({commit}):"
+        )
+        print("".join(body_diff))
+    else:
+        print(
+            f"Pipeline body is unchanged, but the vendored header's "
+            f"branch/commit is stale -- refreshing provenance to "
+            f"{args.branch!r} at {commit}."
+        )
 
     if args.dry_run:
-        print("\nDry run -- fixture not written.")
+        if body_diff:
+            print("\nDry run -- fixture not written.")
+        else:
+            print("\nDry run -- header-only update not written.")
         return 0
 
     FIXTURE_PATH.write_text(new_content)
