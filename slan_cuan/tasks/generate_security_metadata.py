@@ -1,4 +1,4 @@
-"""Generate the OSV and VEX attestations for a given build index."""
+"""Generate the OSV, CycloneDX SBOM, and VEX attestations for a given build index."""
 
 from __future__ import annotations
 
@@ -12,11 +12,12 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import click
 import mmh3
-from fath_cuan.ecosystems import _OSV_ECOSYSTEM
-from fath_cuan.workflow import process_osv
+from fath_cuan.ecosystems import _OSV_ECOSYSTEM, coordinate_from_purl
+from fath_cuan.workflow import process_osv, process_vex
 
 from slan_cuan import oci
 from slan_cuan.models import (
@@ -157,6 +158,206 @@ def _warn_override_divergence(override_id: str, index_data: dict) -> None:
             f"Warning: --advisory-id {override_id} overrides "
             f"derived {derived}; input was {parts}"
         )
+
+
+_MAVEN_REPO_URL = os.environ.get(
+    "SLAN_CUAN_REPOSITORY_URL_MAVEN",
+    "https://packages.redhat.com/lightwell/java/remediated/",
+)
+
+
+def _strip_rhlw_suffix(version: str) -> str:
+    """Strip .rhlw-NNNNN suffix to derive the upstream base version."""
+    m = re.match(r"^(.+?)\.rhlw-\w+-\d+$", version)
+    if m:
+        return m.group(1)
+    m = re.match(r"^(.+?)\.rhlw-\d+$", version)
+    if m:
+        return m.group(1)
+    return version
+
+
+def _read_sha256_sidecar(artifact_dir: Path, relative_path: str) -> str | None:
+    """Read SHA-256 from a checksum sidecar file (.sha256) if it exists."""
+    sidecar = artifact_dir / f"{relative_path}.sha256"
+    if sidecar.exists():
+        content = sidecar.read_text().strip()
+        if content:
+            parts = content.split()
+            return parts[0] if parts else None
+    return None
+
+
+def _generate_sbom(
+    group_id: str,
+    artifact_id: str,
+    version: str,
+    base_version: str,
+    cve_ids: list[str],
+    sha256_hash: str | None,
+    timestamp: str,
+) -> tuple[str, dict]:
+    """Generate a per-artifact CycloneDX 1.7 SBOM.
+
+    Returns (serial_number, sbom_dict) so the caller can pass the
+    serial number to VEX generation for cross-referencing.
+    """
+    serial_number = f"urn:uuid:{uuid4()}"
+    purl_qualified = (
+        f"pkg:maven/{group_id}/{artifact_id}@{version}"
+        f"?type=jar&repository_url={_MAVEN_REPO_URL}"
+    )
+    purl_bare = f"pkg:maven/{group_id}/{artifact_id}@{version}"
+    ancestor_purl = f"pkg:maven/{group_id}/{artifact_id}@{base_version}"
+
+    hashes = []
+    if sha256_hash:
+        hashes.append({"alg": "SHA-256", "content": sha256_hash})
+
+    patches = []
+    for cve_id in cve_ids:
+        patches.append({
+            "type": "backport",
+            "resolves": [{
+                "type": "security",
+                "id": cve_id,
+                "source": {
+                    "name": "NVD",
+                    "url": f"https://nvd.nist.gov/vuln/detail/{cve_id}",
+                },
+            }],
+        })
+
+    component = {
+        "type": "library",
+        "bom-ref": purl_bare,
+        "group": group_id,
+        "name": artifact_id,
+        "version": version,
+        "purl": purl_qualified,
+        "hashes": hashes,
+        "licenses": [],
+        "pedigree": {
+            "ancestors": [{
+                "type": "library",
+                "group": group_id,
+                "name": artifact_id,
+                "version": base_version,
+                "purl": ancestor_purl,
+            }],
+            "patches": patches,
+            "notes": (
+                f"Lightwell remediation: backported security fixes to "
+                f"{artifact_id} {base_version}. Build {version}."
+            ),
+        },
+    }
+
+    sbom = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.7",
+        "serialNumber": serial_number,
+        "version": 1,
+        "metadata": {"timestamp": timestamp},
+        "components": [component],
+    }
+
+    return serial_number, sbom
+
+
+def _generate_sboms_from_index(
+    index_data: dict,
+    workdir: Path,
+    output_dir: Path,
+    timestamp: str,
+) -> dict[str, str]:
+    """Generate per-artifact CycloneDX SBOMs from build-index data.
+
+    Returns a dict mapping PURL -> SBOM serialNumber for VEX
+    cross-referencing.
+    """
+    sbom_serial_numbers: dict[str, str] = {}
+    vulns = index_data.get("vulns", [])
+    purls = index_data.get("purls", [])
+    ecosystem = index_data.get("ecosystem", "").lower()
+
+    if ecosystem != "maven" or not purls:
+        return sbom_serial_numbers
+
+    version_info = index_data.get("version", {})
+    upstream_version = version_info.get("upstream", "")
+
+    for purl in purls:
+        try:
+            coord = coordinate_from_purl(purl, ecosystem=ecosystem, upstream_version=upstream_version)
+        except ValueError:
+            click.echo(f"Skipping unparseable purl {purl}")
+            continue
+
+        parts = coord.name.split(":")
+        if len(parts) != 2:
+            continue
+        group_id, artifact_id = parts
+        version = coord.version
+        base_version = coord.base_version
+
+        # Read SHA-256 from sidecar if available
+        jar_relative = (
+            f"{group_id.replace('.', '/')}/{artifact_id}/{version}"
+            f"/{artifact_id}-{version}.jar"
+        )
+        sha256_hash = _read_sha256_sidecar(workdir, jar_relative)
+
+        serial_number, sbom = _generate_sbom(
+            group_id, artifact_id, version, base_version,
+            vulns, sha256_hash, timestamp,
+        )
+        sbom_serial_numbers[purl] = serial_number
+
+        # Write SBOM file
+        sbom_filename = f"{artifact_id}-{version}.bom.json"
+        sbom_path = output_dir / sbom_filename
+        click.echo(f"Writing SBOM to {sbom_path}")
+        with open(sbom_path, "w") as f:
+            json.dump(sbom, f, indent=2)
+
+    return sbom_serial_numbers
+
+
+def _generate_vex_from_index(
+    index_data: dict,
+    output_dir: Path,
+    osidb_client: "OsidbClient | None",
+    sbom_serial_numbers: dict[str, str],
+    timestamp: str,
+) -> None:
+    """Generate per-CVE and multi-CVE CycloneDX VEX documents."""
+    vex_result = process_vex(
+        index_data,
+        osidb_client=osidb_client,
+        sbom_serial_numbers=sbom_serial_numbers,
+    )
+
+    # Write per-CVE VEX files
+    for cve_id, doc in vex_result.per_cve:
+        filename = f"{cve_id}-{timestamp}.bom.json"
+        path = output_dir / filename
+        click.echo(f"Writing per-CVE VEX to {path}")
+        with open(path, "w") as f:
+            json.dump(doc, f, indent=2)
+
+    # Write multi-CVE VEX file
+    if vex_result.multi_cve:
+        filename = f"{timestamp}.bom.json"
+        path = output_dir / filename
+        click.echo(f"Writing multi-CVE VEX to {path}")
+        with open(path, "w") as f:
+            json.dump(vex_result.multi_cve, f, indent=2)
+
+    click.echo(
+        f"VEX generation complete: {len(vex_result.per_cve)} per-CVE, "
+        f"{'1' if vex_result.multi_cve else '0'} multi-CVE"
+    )
 
 
 _OSIDB_TOKEN_REQUEST_TIMEOUT = float(
@@ -377,7 +578,23 @@ def generate_security_metadata(
         with open(osv_output_path, "w") as f:
             json.dump(record, f, indent=2)
 
-    # TODO: Generate VEX document
+    # Generate per-artifact CycloneDX SBOMs (build-index only)
+    is_build_index = "purls" in index_data or "ecosystem" in index_data
+    sbom_serial_numbers: dict[str, str] = {}
+    if is_build_index:
+        from datetime import UTC, datetime
+
+        ts_now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        sbom_serial_numbers = _generate_sboms_from_index(
+            index_data, workdir, output_dir, ts_now,
+        )
+
+        # Generate per-CVE and multi-CVE CycloneDX VEX documents
+        if index_data.get("vulns"):
+            _generate_vex_from_index(
+                index_data, output_dir, osidb_client,
+                sbom_serial_numbers, ts_now,
+            )
 
     # Save the updated extract result
     result = ExtractResult.from_file(workdir / EXTRACT_RESULT_FILENAME)

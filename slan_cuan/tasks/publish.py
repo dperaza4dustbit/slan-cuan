@@ -102,24 +102,42 @@ def _gav_index_vulnerabilities(
 
 
 def _validate_load_json_security_metadata(path: Path) -> dict[str, Any]:
-    """Validate and load the JSON security metadata from the given file path."""
+    """Validate and load the JSON security metadata from the given file path.
+
+    Accepts OSV (.json), CycloneDX SBOM (.bom.json), and CycloneDX VEX
+    (.bom.json) files.
+    """
     if path.suffix != ".json":
-        raise ValueError("Generated security metadata is not OSV or VEX JSON.")
+        raise ValueError("Generated security metadata is not OSV, VEX, or SBOM JSON.")
     return safe_json_load(
         path,
         parse_err_msg="Generated security metadata is malformed.",
         expected_type=dict,
-        type_err_msg="Generated security metadata is not OSV or VEX JSON.",
+        type_err_msg="Generated security metadata is not OSV, VEX, or SBOM JSON.",
     )
 
 
 def _validate_security_metadata(
     security_metadata_files: tuple[Path, ...], vulns: tuple[str, ...]
 ) -> None:
-    """Validate generated OSV/VEX metadata and its GAV-index relationship."""
+    """Validate generated OSV/VEX/SBOM metadata and its GAV-index relationship."""
     osv_vulnerability_ids: set[str] = set()
     for path in security_metadata_files:
         record = _validate_load_json_security_metadata(path)
+
+        # CycloneDX document: SBOM has components[], VEX has vulnerabilities[]
+        is_cyclonedx = record.get("bomFormat") == "CycloneDX"
+        is_cdx_vex = is_cyclonedx and isinstance(record.get("vulnerabilities"), list)
+        is_cdx_sbom = is_cyclonedx and isinstance(record.get("components"), list)
+        if is_cdx_vex or is_cdx_sbom:
+            # CycloneDX SBOM and VEX are valid security metadata
+            if is_cdx_vex:
+                for vuln in record["vulnerabilities"]:
+                    vuln_id = vuln.get("id", "")
+                    if vuln_id:
+                        osv_vulnerability_ids.add(vuln_id)
+            continue
+
         osv_id = record.get("id")
         affected = record.get("affected")
         aliases = record.get("aliases") or []
@@ -145,7 +163,7 @@ def _validate_security_metadata(
         )
         if not is_osv and not is_vex:
             raise ValueError(
-                "Generated security metadata is not OSV or VEX JSON."
+                "Generated security metadata is not OSV, VEX, or SBOM JSON."
             )
         if is_osv:
             osv_vulnerability_ids.update((osv_id, *aliases, *upstream))

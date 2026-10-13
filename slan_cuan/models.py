@@ -28,6 +28,7 @@ PROVENANCE_SIGSTORE_FILE_SUFFIX = ".provenance.sigstore.json"
 SPDX_FILE_SUFFIX = ".spdx.json"
 VSA_FILE_SUFFIX = ".vsa.json"
 CYCLONEDX_FILE_SUFFIX = ".cyclonedx.json"
+BOM_FILE_SUFFIX = ".bom.json"
 OSV_FILE_SUFFIX = ".osv.json"
 VEX_FILE_SUFFIX = ".vex.json"
 
@@ -212,6 +213,8 @@ def _parse_extension(filename: str) -> str:
         return "vsa"
     elif filename.endswith(CYCLONEDX_FILE_SUFFIX):
         return "cyclonedx"
+    elif filename.endswith(BOM_FILE_SUFFIX):
+        return "bom"
     elif filename.endswith(OSV_FILE_SUFFIX):
         return "osv"
     elif filename.endswith(VEX_FILE_SUFFIX):
@@ -330,12 +333,12 @@ class MavenArtifact:
 
     @property
     def is_cyclonedx(self) -> bool:
-        """True for CycloneDX files."""
-        return self.extension == "cyclonedx"
+        """True for CycloneDX files (.cyclonedx.json or .bom.json SBOM)."""
+        return self.extension in ("cyclonedx", "bom")
 
     @property
     def is_sbom(self) -> bool:
-        """True for SBOM files."""
+        """True for SBOM files (CycloneDX, SPDX, VSA, provenance, or .bom.json)."""
         return (
             self.is_cyclonedx or self.is_spdx or self.is_vsa or self.is_provenance
         )
@@ -472,7 +475,7 @@ class BuildOutput:
                 coord = (a.group_id, a.artifact_id, a.version)
                 if a.extension in ("jar", "pom"):
                     signable_coords.add(coord)
-                elif a.extension in ("cyclonedx", "spdx", "vsa", "provenance"):
+                elif a.extension in ("cyclonedx", "spdx", "vsa", "provenance", "bom"):
                     sbom_coords.add(coord)
             missing = signable_coords - sbom_coords
             if missing:

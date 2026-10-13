@@ -2902,7 +2902,7 @@ def test_publish_rejects_arbitrary_security_metadata(
     )
 
     assert result.exit_code != 0
-    assert "not OSV or VEX JSON" in result.output
+    assert "not OSV, VEX, or SBOM JSON" in result.output
     mock_maven_cls.assert_not_called()
 
 
@@ -3445,7 +3445,7 @@ def test_empty_aliases_and_upstream_rejected(tmp_path: Path) -> None:
     }
     (sec_dir / "empty.json").write_text(json.dumps(rec))
 
-    with pytest.raises(ValueError, match="not OSV or VEX"):
+    with pytest.raises(ValueError, match="not OSV, VEX, or SBOM"):
         _validate_security_metadata(
             (sec_dir / "empty.json",), ("CVE-2024-99999",)
         )
@@ -3466,5 +3466,5 @@ def test_null_aliases_and_upstream_handled(tmp_path: Path) -> None:
     (sec_dir / "null_fields.json").write_text(json.dumps(rec))
 
     files = (sec_dir / "null_fields.json",)
-    with pytest.raises(ValueError, match="not OSV or VEX"):
+    with pytest.raises(ValueError, match="not OSV, VEX, or SBOM"):
         _validate_security_metadata(files, ("CVE-2024-25710",))
