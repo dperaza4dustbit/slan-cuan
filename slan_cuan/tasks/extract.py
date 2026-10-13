@@ -403,9 +403,7 @@ def extract(
             and "-javadoc.jar" not in f
         )
         pom_count = sum(1 for f in files if f.endswith(".pom"))
-        has_sbom = any(
-            "cyclonedx.json" in f or "bom.json" in f for f in files
-        )
+        has_sbom = any("cyclonedx.json" in f or "bom.json" in f for f in files)
         has_provenance = any("provenance.json" in f for f in files)
         total_size = sum(file_sizes.values())
 

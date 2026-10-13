@@ -216,17 +216,21 @@ def _generate_sbom(
 
     patches = []
     for cve_id in cve_ids:
-        patches.append({
-            "type": "backport",
-            "resolves": [{
-                "type": "security",
-                "id": cve_id,
-                "source": {
-                    "name": "NVD",
-                    "url": f"https://nvd.nist.gov/vuln/detail/{cve_id}",
-                },
-            }],
-        })
+        patches.append(
+            {
+                "type": "backport",
+                "resolves": [
+                    {
+                        "type": "security",
+                        "id": cve_id,
+                        "source": {
+                            "name": "NVD",
+                            "url": f"https://nvd.nist.gov/vuln/detail/{cve_id}",
+                        },
+                    }
+                ],
+            }
+        )
 
     component = {
         "type": "library",
@@ -238,13 +242,15 @@ def _generate_sbom(
         "hashes": hashes,
         "licenses": [],
         "pedigree": {
-            "ancestors": [{
-                "type": "library",
-                "group": group_id,
-                "name": artifact_id,
-                "version": base_version,
-                "purl": ancestor_purl,
-            }],
+            "ancestors": [
+                {
+                    "type": "library",
+                    "group": group_id,
+                    "name": artifact_id,
+                    "version": base_version,
+                    "purl": ancestor_purl,
+                }
+            ],
             "patches": patches,
             "notes": (
                 f"Lightwell remediation: backported security fixes to "
@@ -313,8 +319,13 @@ def _generate_sboms_from_index(
         sha256_hash = _read_sha256_sidecar(workdir, jar_relative)
 
         serial_number, sbom = _generate_sbom(
-            group_id, artifact_id, version, base_version,
-            vulns, sha256_hash, timestamp,
+            group_id,
+            artifact_id,
+            version,
+            base_version,
+            vulns,
+            sha256_hash,
+            timestamp,
         )
         sbom_serial_numbers[purl] = serial_number
 
@@ -582,23 +593,28 @@ def generate_security_metadata(
         with open(osv_output_path, "w") as f:
             json.dump(record, f, indent=2)
 
-    # Generate per-artifact CycloneDX SBOMs (build-index only)
+    # Generate per-artifact CycloneDX SBOMs and VEX (build-index only,
+    # gated on vulns: clean builds have no pedigree patches to document).
     is_build_index = "purls" in index_data or "ecosystem" in index_data
     sbom_serial_numbers: dict[str, str] = {}
-    if is_build_index:
+    if is_build_index and index_data.get("vulns"):
         from datetime import UTC, datetime
 
         ts_now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         sbom_serial_numbers = _generate_sboms_from_index(
-            index_data, workdir, output_dir, ts_now,
+            index_data,
+            workdir,
+            output_dir,
+            ts_now,
         )
 
-        # Generate per-CVE and multi-CVE CycloneDX VEX documents
-        if index_data.get("vulns"):
-            _generate_vex_from_index(
-                index_data, output_dir, osidb_client,
-                sbom_serial_numbers, ts_now,
-            )
+        _generate_vex_from_index(
+            index_data,
+            output_dir,
+            osidb_client,
+            sbom_serial_numbers,
+            ts_now,
+        )
 
     # Save the updated extract result
     result = ExtractResult.from_file(workdir / EXTRACT_RESULT_FILENAME)

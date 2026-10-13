@@ -476,8 +476,11 @@ class BuildOutput:
                 if a.extension in ("jar", "pom"):
                     signable_coords.add(coord)
                 elif a.extension in (
-                    "cyclonedx", "spdx", "vsa",
-                    "provenance", "bom",
+                    "cyclonedx",
+                    "spdx",
+                    "vsa",
+                    "provenance",
+                    "bom",
                 ):
                     sbom_coords.add(coord)
             missing = signable_coords - sbom_coords

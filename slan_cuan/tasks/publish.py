@@ -109,8 +109,7 @@ def _validate_load_json_security_metadata(path: Path) -> dict[str, Any]:
     """
     if path.suffix != ".json":
         raise ValueError(
-            "Generated security metadata is not "
-            "OSV, VEX, or SBOM JSON."
+            "Generated security metadata is not OSV, VEX, or SBOM JSON."
         )
     return safe_json_load(
         path,
@@ -130,9 +129,8 @@ def _validate_security_metadata(
 
         # CycloneDX document: SBOM has components[], VEX has vulnerabilities[]
         is_cyclonedx = record.get("bomFormat") == "CycloneDX"
-        is_cdx_vex = (
-            is_cyclonedx
-            and isinstance(record.get("vulnerabilities"), list)
+        is_cdx_vex = is_cyclonedx and isinstance(
+            record.get("vulnerabilities"), list
         )
         is_cdx_sbom = is_cyclonedx and isinstance(record.get("components"), list)
         if is_cdx_vex or is_cdx_sbom:
@@ -389,6 +387,17 @@ def _retrieve_uploadable_metadata(
     kept: list[Path] = []
     dropped: list[Path] = []
     for metadata_file in security_metadata_files:
+        # CycloneDX SBOM/VEX files (bomFormat == "CycloneDX") inherit
+        # the routing of the OSV records they accompany — they are not
+        # source-routed independently. Keep them with the batch.
+        cdx_record = safe_json_load(metadata_file, raise_on_err=False)
+        if (
+            isinstance(cdx_record, dict)
+            and cdx_record.get("bomFormat") == "CycloneDX"
+        ):
+            kept.append(metadata_file)
+            continue
+
         record_source = _classify_osv_source(metadata_file)
         if record_source == expected_source:
             kept.append(metadata_file)
