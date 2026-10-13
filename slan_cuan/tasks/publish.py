@@ -137,6 +137,8 @@ def _validate_security_metadata(
             # CycloneDX SBOM and VEX are valid security metadata
             if is_cdx_vex:
                 for vuln in record["vulnerabilities"]:
+                    if not isinstance(vuln, dict):
+                        continue
                     vuln_id = vuln.get("id", "")
                     if vuln_id:
                         osv_vulnerability_ids.add(vuln_id)

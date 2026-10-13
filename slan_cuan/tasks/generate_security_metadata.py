@@ -36,6 +36,11 @@ _LOWER_64_MASK = 0xFFFF_FFFF_FFFF_FFFF
 _ADVISORY_ID_RE = re.compile(r"^RHLW-\d{4}-[0-9a-f]{16}$")
 
 
+def _is_build_index(index_data: dict) -> bool:
+    """Check whether the index is a unified build-index."""
+    return "purls" in index_data or "ecosystem" in index_data
+
+
 def _derive_advisory_id(index_data: dict) -> str | None:
     """Derive a MurmurHash3-based advisory ID from the build index.
 
@@ -47,7 +52,7 @@ def _derive_advisory_id(index_data: dict) -> str | None:
     if not index_data.get("vulns"):
         return None
 
-    if "purls" in index_data or "ecosystem" in index_data:
+    if _is_build_index(index_data):
         raw_eco = index_data.get("ecosystem", "").lower()
         ecosystem = _OSV_ECOSYSTEM.get(raw_eco)
         if not ecosystem:
@@ -138,7 +143,7 @@ def _validate_advisory_id(ctx, param, value):
 
 def _combo_key_summary(index_data: dict) -> list[str]:
     """Return a short description of the combo-key inputs for logging."""
-    if "purls" in index_data or "ecosystem" in index_data:
+    if _is_build_index(index_data):
         raw_eco = index_data.get("ecosystem", "").lower()
         eco = _OSV_ECOSYSTEM.get(raw_eco, raw_eco)
         primary = index_data.get(
@@ -166,20 +171,14 @@ _MAVEN_REPO_URL = os.environ.get(
 )
 
 
-def _strip_rhlw_suffix(version: str) -> str:
-    """Strip .rhlw-NNNNN suffix to derive the upstream base version."""
-    m = re.match(r"^(.+?)\.rhlw-\w+-\d+$", version)
-    if m:
-        return m.group(1)
-    m = re.match(r"^(.+?)\.rhlw-\d+$", version)
-    if m:
-        return m.group(1)
-    return version
+def _read_sha256_sidecar(repo_dir: Path, relative_path: str) -> str | None:
+    """Read SHA-256 from a checksum sidecar file (.sha256).
 
-
-def _read_sha256_sidecar(artifact_dir: Path, relative_path: str) -> str | None:
-    """Read SHA-256 from a checksum sidecar file (.sha256) if it exists."""
-    sidecar = artifact_dir / f"{relative_path}.sha256"
+    ``repo_dir`` is the repository root (e.g.
+    ``workdir/<deliverable_dir>/repository``) so the sidecar is looked
+    up at the same Maven layout path as the artifact itself.
+    """
+    sidecar = repo_dir / f"{relative_path}.sha256"
     if sidecar.exists():
         content = sidecar.read_text().strip()
         if content:
@@ -216,6 +215,10 @@ def _generate_sbom(
 
     patches = []
     for cve_id in cve_ids:
+        # LW- novel-fix IDs are not CVEs — skip them in pedigree
+        # patches (no NVD entry, and type is not "backport").
+        if cve_id.startswith("LW-"):
+            continue
         patches.append(
             {
                 "type": "backport",
@@ -225,7 +228,7 @@ def _generate_sbom(
                         "id": cve_id,
                         "source": {
                             "name": "NVD",
-                            "url": f"https://nvd.nist.gov/vuln/detail/{cve_id}",
+                            "url": (f"https://nvd.nist.gov/vuln/detail/{cve_id}"),
                         },
                     }
                 ],
@@ -290,6 +293,17 @@ def _generate_sboms_from_index(
     if ecosystem != "maven" or not purls:
         return sbom_serial_numbers
 
+    # Resolve the repository root for checksum sidecar lookup.
+    # The extract stage writes artifacts under
+    # <workdir>/<deliverable_dir>/repository/.
+    repo_dir: Path | None = None
+    result_path = workdir / EXTRACT_RESULT_FILENAME
+    if result_path.exists():
+        er = ExtractResult.from_file(result_path)
+        candidate = workdir / er.deliverable_dir / "repository"
+        if candidate.is_dir():
+            repo_dir = candidate
+
     version_info = index_data.get("version", {})
     upstream_version = version_info.get("upstream", "")
 
@@ -313,10 +327,12 @@ def _generate_sboms_from_index(
 
         # Read SHA-256 from sidecar if available
         jar_relative = (
-            f"{group_id.replace('.', '/')}/{artifact_id}/{version}"
-            f"/{artifact_id}-{version}.jar"
+            f"{group_id.replace('.', '/')}/{artifact_id}"
+            f"/{version}/{artifact_id}-{version}.jar"
         )
-        sha256_hash = _read_sha256_sidecar(workdir, jar_relative)
+        sha256_hash = (
+            _read_sha256_sidecar(repo_dir, jar_relative) if repo_dir else None
+        )
 
         serial_number, sbom = _generate_sbom(
             group_id,
@@ -329,8 +345,8 @@ def _generate_sboms_from_index(
         )
         sbom_serial_numbers[purl] = serial_number
 
-        # Write SBOM file
-        sbom_filename = f"{artifact_id}-{version}.bom.json"
+        # Write SBOM file (include groupId to avoid collisions)
+        sbom_filename = f"{group_id}.{artifact_id}-{version}.bom.json"
         sbom_path = output_dir / sbom_filename
         click.echo(f"Writing SBOM to {sbom_path}")
         with open(sbom_path, "w") as f:
@@ -595,9 +611,8 @@ def generate_security_metadata(
 
     # Generate per-artifact CycloneDX SBOMs and VEX (build-index only,
     # gated on vulns: clean builds have no pedigree patches to document).
-    is_build_index = "purls" in index_data or "ecosystem" in index_data
     sbom_serial_numbers: dict[str, str] = {}
-    if is_build_index and index_data.get("vulns"):
+    if _is_build_index(index_data) and index_data.get("vulns"):
         from datetime import UTC, datetime
 
         ts_now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
