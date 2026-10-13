@@ -338,7 +338,7 @@ class MavenArtifact:
 
     @property
     def is_sbom(self) -> bool:
-        """True for SBOM files (CycloneDX, SPDX, VSA, provenance, or .bom.json)."""
+        """True for SBOM files."""
         return (
             self.is_cyclonedx or self.is_spdx or self.is_vsa or self.is_provenance
         )
@@ -475,7 +475,10 @@ class BuildOutput:
                 coord = (a.group_id, a.artifact_id, a.version)
                 if a.extension in ("jar", "pom"):
                     signable_coords.add(coord)
-                elif a.extension in ("cyclonedx", "spdx", "vsa", "provenance", "bom"):
+                elif a.extension in (
+                    "cyclonedx", "spdx", "vsa",
+                    "provenance", "bom",
+                ):
                     sbom_coords.add(coord)
             missing = signable_coords - sbom_coords
             if missing:

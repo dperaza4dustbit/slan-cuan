@@ -108,7 +108,10 @@ def _validate_load_json_security_metadata(path: Path) -> dict[str, Any]:
     (.bom.json) files.
     """
     if path.suffix != ".json":
-        raise ValueError("Generated security metadata is not OSV, VEX, or SBOM JSON.")
+        raise ValueError(
+            "Generated security metadata is not "
+            "OSV, VEX, or SBOM JSON."
+        )
     return safe_json_load(
         path,
         parse_err_msg="Generated security metadata is malformed.",
@@ -127,7 +130,10 @@ def _validate_security_metadata(
 
         # CycloneDX document: SBOM has components[], VEX has vulnerabilities[]
         is_cyclonedx = record.get("bomFormat") == "CycloneDX"
-        is_cdx_vex = is_cyclonedx and isinstance(record.get("vulnerabilities"), list)
+        is_cdx_vex = (
+            is_cyclonedx
+            and isinstance(record.get("vulnerabilities"), list)
+        )
         is_cdx_sbom = is_cyclonedx and isinstance(record.get("components"), list)
         if is_cdx_vex or is_cdx_sbom:
             # CycloneDX SBOM and VEX are valid security metadata

@@ -1,4 +1,4 @@
-"""Generate the OSV, CycloneDX SBOM, and VEX attestations for a given build index."""
+"""Generate OSV, CycloneDX SBOM, and VEX attestations."""
 
 from __future__ import annotations
 
@@ -289,7 +289,11 @@ def _generate_sboms_from_index(
 
     for purl in purls:
         try:
-            coord = coordinate_from_purl(purl, ecosystem=ecosystem, upstream_version=upstream_version)
+            coord = coordinate_from_purl(
+                purl,
+                ecosystem=ecosystem,
+                upstream_version=upstream_version,
+            )
         except ValueError:
             click.echo(f"Skipping unparseable purl {purl}")
             continue
