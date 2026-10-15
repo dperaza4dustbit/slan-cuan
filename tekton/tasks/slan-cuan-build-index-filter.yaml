@@ -1,0 +1,70 @@
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: slan-cuan-build-index-filter
+  labels:
+    app.kubernetes.io/version: "0.1"
+  annotations:
+    tekton.dev/categories: Build
+    tekton.dev/displayName: "slan-cuan: Filter Payload by Build Index"
+    tekton.dev/pipelines.minVersion: "0.50.0"
+    tekton.dev/platforms: "linux/amd64"
+    tekton.dev/tags: "release,filtering,build-index"
+spec:
+  description: >-
+    Filter payload directory artifacts against build-index.json purls.
+  params:
+    - name: IMAGE_REF
+      description: Container image reference (digest-pinned) to discover build-index from.
+      type: string
+    - name: PAYLOAD_DIR
+      description: Directory containing payload files to filter.
+      type: string
+      default: /var/workdir/extracted
+    - name: PUBLISH_ALL
+      description: Publish all artifacts without filtering by build-index purls.
+      type: string
+      default: "false"
+    - name: REGISTRY_AUTH_SECRET
+      description: K8s Secret name for registry auth (.dockerconfigjson format).
+      type: string
+      default: "registry-auth"
+  results:
+    - name: CONSUMED_BUILD_INDEX_DIGEST
+      description: Sha256 digest of the consumed build-index.json referrer.
+    - name: KEPT_COUNT
+      description: Count of payload files kept after filtering.
+    - name: REMOVED_COUNT
+      description: Count of payload files removed to the filtered sibling directory.
+  stepTemplate:
+    volumeMounts:
+      - mountPath: /var/workdir
+        name: workdir
+  steps:
+    - name: run
+      image: quay.io/light-castle/slan-cuan:latest
+      imagePullPolicy: Always
+      args:
+        - build-index-filter
+      env:
+        - name: SLAN_CUAN_BUILD_INDEX_FILTER_IMAGE_REF
+          value: $(params.IMAGE_REF)
+        - name: SLAN_CUAN_BUILD_INDEX_FILTER_PAYLOAD_DIR
+          value: $(params.PAYLOAD_DIR)
+        - name: SLAN_CUAN_BUILD_INDEX_FILTER_PUBLISH_ALL
+          value: $(params.PUBLISH_ALL)
+        - name: SLAN_CUAN_BUILD_INDEX_FILTER_REGISTRY_AUTH_FILE
+          value: /auth/.dockerconfigjson
+        - name: SLAN_CUAN_TEKTON_RESULTS_DIR
+          value: /tekton/results
+      volumeMounts:
+        - name: registry-auth
+          mountPath: /auth
+          readOnly: true
+  volumes:
+    - name: workdir
+      emptyDir: {}
+    - name: registry-auth
+      secret:
+        secretName: $(params.REGISTRY_AUTH_SECRET)

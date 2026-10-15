@@ -6,10 +6,17 @@ import json
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import click
 import pytest
 
 from slan_cuan.models import ImageReference
-from slan_cuan.oci import OrasError, discover, manifest_fetch, pull
+from slan_cuan.oci import (
+    OrasError,
+    deduplicate_referrers,
+    discover,
+    manifest_fetch,
+    pull,
+)
 
 
 class TestPull:
@@ -502,3 +509,78 @@ class TestOrasError:
         assert error.stderr == "stderr content"
         assert error.returncode == 1
         assert str(error) == "Test error"
+
+
+class TestDeduplicateReferrers:
+    """Tests for deduplicate_referrers()."""
+
+    @pytest.fixture
+    def image_ref(self) -> ImageReference:
+        """Return sample image reference fixture."""
+        return ImageReference(
+            registry="quay.io",
+            repository="example/repo",
+            tag=None,
+            digest="sha256:rootimage",
+        )
+
+    def test_empty_referrers_returns_none(
+        self, image_ref: ImageReference
+    ) -> None:
+        """Empty or invalid referrers list returns None."""
+        assert deduplicate_referrers([], "type", image_ref) is None
+        assert deduplicate_referrers([{"foo": "bar"}], "type", image_ref) is None
+
+    def test_single_referrer_returns_it(self, image_ref: ImageReference) -> None:
+        """Single referrer is returned directly without fetching manifest."""
+        ref = {"digest": "sha256:abc"}
+        assert deduplicate_referrers([ref], "type", image_ref) == ref
+
+    def test_identical_manifest_digests_deduplicates(
+        self, image_ref: ImageReference
+    ) -> None:
+        """Referrers sharing identical manifest digests deduplicate."""
+        ref1 = {"digest": "sha256:abc"}
+        ref2 = {"digest": "sha256:abc"}
+        result = deduplicate_referrers([ref1, ref2], "type", image_ref)
+        assert result == ref1
+
+    def test_identical_layers_deduplicates(
+        self, image_ref: ImageReference
+    ) -> None:
+        """Referrers sharing identical layers deduplicate."""
+        ref1 = {"digest": "sha256:manifest1"}
+        ref2 = {"digest": "sha256:manifest2"}
+
+        def mock_fetch(img, **kwargs):
+            return {
+                "layers": [{"digest": "sha256:same_blob"}],
+            }
+
+        result = deduplicate_referrers(
+            [ref1, ref2],
+            "type",
+            image_ref,
+            manifest_fetch_fn=mock_fetch,
+        )
+        assert result in (ref1, ref2)
+
+    def test_distinct_layers_raises_error(
+        self, image_ref: ImageReference
+    ) -> None:
+        """Distinct layer sets raise ClickException."""
+        ref1 = {"digest": "sha256:manifest1"}
+        ref2 = {"digest": "sha256:manifest2"}
+
+        def mock_fetch(img, **kwargs):
+            if img.digest == "sha256:manifest1":
+                return {"layers": [{"digest": "sha256:blob1"}]}
+            return {"layers": [{"digest": "sha256:blob2"}]}
+
+        with pytest.raises(click.ClickException, match="distinct blob sets"):
+            deduplicate_referrers(
+                [ref1, ref2],
+                "type",
+                image_ref,
+                manifest_fetch_fn=mock_fetch,
+            )

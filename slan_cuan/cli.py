@@ -6,6 +6,7 @@ import click
 
 from slan_cuan.models import GlobalContext
 from slan_cuan.tasks import (
+    build_index_filter,
     extract,
     generate_security_metadata,
     generate_security_metadata_from_snapshot,
@@ -60,6 +61,7 @@ def main(
 main.add_command(generate_security_metadata)
 main.add_command(generate_security_metadata_from_snapshot)
 main.add_command(extract)
+main.add_command(build_index_filter)
 main.add_command(publish)
 main.add_command(sign)
 main.add_command(register)

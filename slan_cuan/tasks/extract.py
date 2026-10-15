@@ -20,7 +20,13 @@ from slan_cuan.models import (
     ImageReference,
     OCIManifest,
 )
-from slan_cuan.oci import OrasError, discover, manifest_fetch, pull
+from slan_cuan.oci import (
+    OrasError,
+    deduplicate_referrers,
+    discover,
+    manifest_fetch,
+    pull,
+)
 from slan_cuan.utils import write_tekton_result
 
 
@@ -31,77 +37,14 @@ def _deduplicate_referrers(
     registry_auth_file: Path | None,
     verbose: bool,
 ) -> dict | None:
-    """Resolve referrers to a single one if layer blobs are identical.
-
-    Returns the selected referrer descriptor, or None if no valid referrers
-    exist. Raises click.ClickException if distinct artifact blob sets exist.
-    """
-    valid_referrers = [r for r in referrers if r.get("digest")]
-    if not valid_referrers:
-        return None
-
-    # Fast path 1: Only 1 referrer
-    if len(valid_referrers) == 1:
-        return valid_referrers[0]
-
-    # Fast path 2: All referrers point to the exact same manifest digest
-    unique_manifest_digests = {r["digest"]: r for r in valid_referrers}
-    if len(unique_manifest_digests) == 1:
-        if verbose:
-            click.echo(
-                f"  Found {len(valid_referrers)} referrers for '{art_type}' "
-                f"with identical manifest digest; deduplicating."
-            )
-        return next(iter(unique_manifest_digests.values()))
-
-    # Slow path: Fetch raw manifests and compare layer/config digests
-    blob_digests_seen: dict[tuple[str, ...], dict] = {}
-    for ref_digest, ref_desc in unique_manifest_digests.items():
-        ref_img = ImageReference(
-            registry=img_ref.registry,
-            repository=img_ref.repository,
-            tag=None,
-            digest=ref_digest,
-        )
-        ref_manifest_raw = manifest_fetch(
-            ref_img,
-            auth_file=registry_auth_file,
-            verbose=verbose,
-        )
-
-        layers_raw = ref_manifest_raw.get("layers", [])
-        if isinstance(layers_raw, list) and layers_raw:
-            layer_digests = tuple(
-                str(layer["digest"])
-                for layer in layers_raw
-                if isinstance(layer, dict) and "digest" in layer
-            )
-        else:
-            # For 0-layer artifacts or index manifests, fall back to
-            # config digest or raw manifest digest
-            config_digest = (
-                ref_manifest_raw.get("config", {}).get("digest")
-                if isinstance(ref_manifest_raw.get("config"), dict)
-                else None
-            )
-            layer_digests = (config_digest or ref_digest,)
-
-        if layer_digests not in blob_digests_seen:
-            blob_digests_seen[layer_digests] = ref_desc
-
-    if len(blob_digests_seen) > 1:
-        raise click.ClickException(
-            f"Expected at most 1 unique artifact for type '{art_type}', "
-            f"found {len(blob_digests_seen)} distinct blob sets across "
-            f"{len(valid_referrers)} referrers."
-        )
-
-    if verbose:
-        click.echo(
-            f"  Found {len(valid_referrers)} referrers for '{art_type}' "
-            f"with identical layer blobs; deduplicating."
-        )
-    return next(iter(blob_digests_seen.values()))
+    return deduplicate_referrers(
+        referrers=referrers,
+        art_type=art_type,
+        img_ref=img_ref,
+        registry_auth_file=registry_auth_file,
+        verbose=verbose,
+        manifest_fetch_fn=manifest_fetch,
+    )
 
 
 @click.command()

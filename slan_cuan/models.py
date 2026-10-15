@@ -10,6 +10,9 @@ from pathlib import Path
 EXTRACT_RESULT_FILENAME = "extract-result.json"
 PUBLISH_RESULT_FILENAME = "publish-result.json"
 REGISTER_RESULT_FILENAME = "register-result.json"
+FILTER_REPORT_FILENAME = "filter-report.json"
+
+BUILD_INDEX_MEDIA_TYPE = "application/vnd.lightwell.build-index.v1+json"
 
 # Directory names, relative to extract's output_dir, that extract.py writes
 # and that the slan-cuan-extract Task's prepare-source-data step copies by
