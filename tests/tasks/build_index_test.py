@@ -57,7 +57,7 @@ class TestHelpers:
         )
 
     def test_get_purl_candidate_patterns_and_matching(self) -> None:
-        """Test candidate pattern generation and matching across PEP 427/PEP 440 variants."""
+        """Test candidate generation and matching across PEP 427/440 variants."""
         # Standard purl
         pats = get_purl_candidate_patterns("pkg:pypi/foo-bar@1.2.3")
         assert "foo_bar-1.2.3-py3-none-any.whl" in pats
@@ -65,7 +65,9 @@ class TestHelpers:
         assert "foo-bar-1.2.3.tar.gz" in pats
         assert "foo_bar-1.2.3.tar.gz" in pats
         assert matches_any_candidate("foo_bar-1.2.3-py3-none-any.whl", pats)
-        assert matches_any_candidate("foo_bar-1.2.3-py3-none-any.whl.sha512", pats)
+        assert matches_any_candidate(
+            "foo_bar-1.2.3-py3-none-any.whl.sha512", pats
+        )
         assert matches_any_candidate("foo-bar-1.2.3.tar.gz", pats)
         assert matches_any_candidate("foo_bar-1.2.3.tar.gz.sig", pats)
 
@@ -81,15 +83,23 @@ class TestHelpers:
         pats_local = get_purl_candidate_patterns("pkg:pypi/my-pkg@1.0.0+rhlw.1")
         assert "my_pkg-1.0.0_rhlw.1-py3-none-any.whl" in pats_local
         assert "my_pkg-1.0.0_rhlw.1-*.whl" in pats_local
-        assert matches_any_candidate("my_pkg-1.0.0_rhlw.1-py3-none-any.whl", pats_local)
-        assert matches_any_candidate("my_pkg-1.0.0_rhlw.1-cp39-cp39-linux_x86_64.whl", pats_local)
+        assert matches_any_candidate(
+            "my_pkg-1.0.0_rhlw.1-py3-none-any.whl", pats_local
+        )
+        assert matches_any_candidate(
+            "my_pkg-1.0.0_rhlw.1-cp39-cp39-linux_x86_64.whl",
+            pats_local,
+        )
 
         # Case variants
         assert matches_any_candidate("Foo_Bar-1.2.3-py3-none-any.whl", pats)
         assert matches_any_candidate("FOO-BAR-1.2.3.TAR.GZ", pats)
 
         # Multi-glob wheel tags
-        assert matches_any_candidate("foo_bar-1.2.3-cp311-cp311-manylinux_2_17_x86_64.whl", pats)
+        assert matches_any_candidate(
+            "foo_bar-1.2.3-cp311-cp311-manylinux_2_17_x86_64.whl",
+            pats,
+        )
 
         # Unmatched / unknown files
         assert not matches_any_candidate("random-file.txt", pats)
