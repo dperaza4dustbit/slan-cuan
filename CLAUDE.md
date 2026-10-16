@@ -46,6 +46,7 @@ The naming convention is `slan-cuan-<subcommand>`.
 | Subcommand | Tekton Task | Task YAML |
 |------------|-------------|-----------|
 | `extract` | `slan-cuan-extract` | `tekton/tasks/slan-cuan-extract.yaml` |
+| `python extract-filter` | `slan-cuan-extract-filter` | `tekton/tasks/python/slan-cuan-extract-filter.yaml` |
 | `sign` | `slan-cuan-sign` | `tekton/tasks/slan-cuan-sign.yaml` |
 | `register` | `slan-cuan-register` | `tekton/tasks/slan-cuan-register.yaml` |
 | `publish` | `slan-cuan-publish` | `tekton/tasks/slan-cuan-publish.yaml` |

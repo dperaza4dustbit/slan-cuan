@@ -7,6 +7,8 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+import click
+
 EXTRACT_RESULT_FILENAME = "extract-result.json"
 PUBLISH_RESULT_FILENAME = "publish-result.json"
 REGISTER_RESULT_FILENAME = "register-result.json"
@@ -128,6 +130,22 @@ class ImageReference:
         if self.digest:
             ref = f"{ref}@{self.digest}"
         return ref
+
+
+def parse_image_ref(image_ref_str: str) -> ImageReference:
+    """Parse an image reference, failing as a clean CLI error.
+
+    Wraps :meth:`ImageReference.parse` so an invalid reference surfaces as
+    a ``click.ClickException`` (single-line CLI error) instead of a raw
+    ``ValueError`` traceback. Shared by every command that accepts image
+    references from snapshot specs or CLI flags.
+    """
+    try:
+        return ImageReference.parse(image_ref_str)
+    except ValueError as e:
+        raise click.ClickException(
+            f"Invalid image reference {image_ref_str}: {e}"
+        ) from e
 
 
 @dataclass(frozen=True)

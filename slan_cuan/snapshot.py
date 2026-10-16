@@ -7,10 +7,11 @@ references. Parsing is ecosystem-agnostic.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import click
+
+from slan_cuan.utils import safe_json_load
 
 
 def snapshot_component_images(snapshot_path: Path) -> list[str]:
@@ -19,12 +20,13 @@ def snapshot_component_images(snapshot_path: Path) -> list[str]:
     Fails closed when the file is missing, unparsable, or carries no
     component images.
     """
-    try:
-        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        raise click.ClickException(
-            f"Failed to parse snapshot spec {snapshot_path}: {e}"
-        ) from e
+    snapshot = safe_json_load(
+        snapshot_path,
+        parse_err_msg=f"Failed to parse snapshot spec {snapshot_path}",
+        expected_type=dict,
+        type_err_msg=f"Snapshot spec {snapshot_path} is not a JSON object",
+        raise_type=click.ClickException,
+    )
 
     images = [
         c.get("containerImage")

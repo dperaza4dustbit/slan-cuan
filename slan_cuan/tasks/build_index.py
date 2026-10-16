@@ -7,9 +7,10 @@ files (e.g. the ``chains-provenance/`` metadata directory) always pass
 through untouched -- downstream signing consumes them.
 
 The stage functions (:func:`load_build_index`,
-:func:`purls_from_index`, :func:`apply_release_scope_filter`) are shared
-with the merged ``python extract-filter`` command; the ecosystem-specific
-filename conventions live in :mod:`slan_cuan.python.pypi`.
+:func:`purls_from_index`, :func:`apply_release_scope_filter`) are
+consumed by the merged ``python extract-filter`` command; the
+ecosystem-specific filename conventions live in
+:mod:`slan_cuan.python.pypi`.
 """
 
 from __future__ import annotations
@@ -24,8 +25,8 @@ import click
 from slan_cuan.models import (
     BUILD_INDEX_MEDIA_TYPE,
     FILTER_REPORT_FILENAME,
-    GlobalContext,
     ImageReference,
+    parse_image_ref,
 )
 from slan_cuan.oci import (
     OrasError,
@@ -39,7 +40,7 @@ from slan_cuan.python.pypi import (
     is_distribution_filename,
     matches_any_candidate,
 )
-from slan_cuan.utils import write_tekton_result
+from slan_cuan.utils import safe_json_load
 from slan_cuan.utils.checksum import compute_checksum
 
 
@@ -55,7 +56,7 @@ def load_build_index(
     reference is not digest-pinned, no referrer exists, referrers are
     ambiguous, or the index is missing or unparsable.
     """
-    img_ref = ImageReference.parse(image_ref_str)
+    img_ref = parse_image_ref(image_ref_str)
     if not img_ref.digest:
         raise click.ClickException(
             "Image reference must include a digest "
@@ -125,18 +126,14 @@ def load_build_index(
                 )
 
         build_index_digest = f"sha256:{compute_checksum(index_file, 'sha256')}"
-        try:
-            index_data = json.loads(index_file.read_text(encoding="utf-8"))
-        except Exception as e:
-            raise click.ClickException(
-                f"Failed to parse build-index.json: {e}"
-            ) from e
-
-    if not isinstance(index_data, dict):
-        raise click.ClickException(
-            f"Expected JSON object in build-index.json, "
-            f"got {type(index_data).__name__}"
+        index_data = safe_json_load(
+            index_file,
+            parse_err_msg=f"Failed to parse build-index.json: {index_file}",
+            expected_type=dict,
+            type_err_msg="Expected JSON object in build-index.json",
+            raise_type=click.ClickException,
         )
+
     return index_data, build_index_digest
 
 
@@ -242,73 +239,3 @@ def apply_release_scope_filter(
         f"Filtered payload: {len(kept_files)} kept, {len(removed_files)} removed."
     )
     return len(kept_files), len(removed_files)
-
-
-@click.command("build-index-filter")
-@click.option(
-    "--image-ref",
-    required=True,
-    type=str,
-    help="Digest-pinned container image reference to discover index from.",
-)
-@click.option(
-    "--payload-dir",
-    required=True,
-    type=click.Path(path_type=Path),
-    help="Directory containing payload files to filter.",
-)
-@click.option(
-    "--publish-all",
-    is_flag=True,
-    default=False,
-    help="Publish all artifacts without filtering by build-index purls.",
-)
-@click.option(
-    "--registry-auth-file",
-    type=click.Path(exists=True, path_type=Path),
-    default=None,
-    help="Path to container registry authentication file.",
-)
-@click.pass_obj
-def build_index_filter(
-    ctx: GlobalContext,
-    image_ref: str,
-    payload_dir: Path,
-    publish_all: bool,
-    registry_auth_file: Path | None,
-) -> None:
-    """Filter payload directory artifacts against build-index purls."""
-    if not payload_dir.is_dir():
-        raise click.ClickException(
-            "Payload directory does not exist or is not a directory: "
-            f"{payload_dir}"
-        )
-
-    index_data, build_index_digest = load_build_index(
-        image_ref, registry_auth_file, verbose=ctx.verbose
-    )
-    purls = purls_from_index(index_data)
-
-    if ctx.dry_run:
-        click.echo(f"Build index digest: {build_index_digest}")
-        click.echo(f"Purls in build-index: {len(purls)}")
-        click.echo(f"Publish all: {publish_all}")
-
-    kept, removed = apply_release_scope_filter(
-        payload_dir,
-        purls,
-        publish_all,
-        build_index_digest=build_index_digest,
-        dry_run=ctx.dry_run,
-    )
-
-    if ctx.dry_run:
-        return
-    if ctx.tekton_results_dir:
-        write_tekton_result(
-            ctx.tekton_results_dir,
-            "CONSUMED_BUILD_INDEX_DIGEST",
-            build_index_digest,
-        )
-        write_tekton_result(ctx.tekton_results_dir, "KEPT_COUNT", str(kept))
-        write_tekton_result(ctx.tekton_results_dir, "REMOVED_COUNT", str(removed))

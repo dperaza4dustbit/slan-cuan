@@ -31,8 +31,13 @@ def canonicalize_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def parse_pypi_purl(purl: str) -> tuple[str, str] | None:
-    """Parse a PyPI PURL string into (canonical_name, version).
+def parse_pypi_purl(purl: str) -> tuple[str, str, str] | None:
+    """Parse a PyPI PURL string into (purl_name, canonical_name, version).
+
+    The PURL name is normalized per the purl spec (lowercase, underscores
+    to hyphens) but preserves dots, which PEP 503 canonicalization would
+    collapse -- dotted project names such as ``zope.interface`` keep the
+    dot in their sdist filenames.
 
     Accepts 'pkg:pypi/name@version' (with optional namespace or qualifiers).
     Returns None if the PURL is not a valid PyPI PURL or missing name/version.
@@ -40,18 +45,28 @@ def parse_pypi_purl(purl: str) -> tuple[str, str] | None:
     try:
         p = PackageURL.from_string(purl)
         if p.type == "pypi" and p.name and p.version:
-            return canonicalize_name(p.name), p.version
+            return p.name, canonicalize_name(p.name), p.version
     except ValueError:
         pass
     return None
 
 
 def get_base_artifact_filename(filename: str) -> str:
-    """Strip known sidecar checksum/signature extensions."""
-    for suffix in _SIDECAR_SUFFIXES:
-        if filename.endswith(suffix):
-            return filename[: -len(suffix)]
-    return filename
+    """Strip known sidecar checksum/signature extensions.
+
+    Strips chained sidecar extensions, so e.g. ``pkg-1.0.whl.asc.sha256``
+    (a checksum of a detached signature) reduces to ``pkg-1.0.whl``.
+    """
+    base = filename
+    changed = True
+    while changed:
+        changed = False
+        for suffix in _SIDECAR_SUFFIXES:
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                changed = True
+                break
+    return base
 
 
 def is_distribution_filename(filename: str) -> bool:
@@ -76,13 +91,16 @@ def get_purl_candidate_patterns(purl_str: str) -> set[str]:
       non-alphanumeric chars (esp. '+' and '.' in local versions, or '-')
       escaped to '_' per PEP 427:
       '{name}-{version}-py3-none-any.whl' plus '{name}-{version}-*.whl' glob.
-    - Sdist: '{name}-{version}.tar.gz' (both hyphen and underscore name variants).
+    - Sdist: '{name}-{version}.tar.gz' (PURL name, hyphen-canonicalized,
+      and underscore name variants -- dotted PyPI project names such as
+      zope.interface keep the dot in their sdist filenames, and the PURL
+      name preserves it while canonicalization collapses it).
     """
     coord = parse_pypi_purl(purl_str)
     if not coord:
         return set()
 
-    canonical_name, version = coord
+    purl_name, canonical_name, version = coord
     wheel_name = canonical_name.replace("-", "_")
     wheel_version = re.sub(r"[^\w.]+", "_", version)
 
@@ -92,6 +110,7 @@ def get_purl_candidate_patterns(purl_str: str) -> set[str]:
     patterns = {
         f"{wheel_name}-{wheel_version}-py3-none-any.whl",
         f"{wheel_name}-{wheel_version}-*.whl",
+        f"{purl_name}-{version}.tar.gz",
         f"{sdist_name_hyphen}-{version}.tar.gz",
         f"{sdist_name_underscore}-{version}.tar.gz",
     }

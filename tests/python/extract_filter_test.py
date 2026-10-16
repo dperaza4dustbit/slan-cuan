@@ -191,3 +191,45 @@ class TestExtractFilterCommand:
         assert res.exit_code != 0
         assert "exactly one component image" in res.output
         assert "2" in res.output
+        # The fast-fail precedes any network work: no pulls, no cosign
+        # runs, no build-index fetch for the rejected snapshot.
+        mock_pull.assert_not_called()
+        mock_run.assert_not_called()
+        mock_load.assert_not_called()
+
+    @patch(_LOAD)
+    @patch(_RUN)
+    @patch(_PULL)
+    def test_dry_run_is_side_effect_free(
+        self,
+        mock_pull: MagicMock,
+        mock_run: MagicMock,
+        mock_load: MagicMock,
+        runner: CliRunner,
+        tmp_path: Path,
+    ) -> None:
+        """Dry-run previews the plan without any pulls, cosign, or fetches."""
+        self._wire(mock_pull, mock_run, mock_load, {})
+        snapshot = _make_snapshot(tmp_path, [IMAGE])
+
+        res = runner.invoke(
+            main,
+            [
+                "--dry-run",
+                "python",
+                "extract-filter",
+                "--snapshot-path",
+                str(snapshot),
+                "--files-dir",
+                str(tmp_path / "files"),
+            ],
+        )
+        assert res.exit_code == 0, res.output
+        assert "dry-run" not in res.output  # java-style preview, not filter echo
+        assert f"Would extract payload from {IMAGE}" in res.output
+        # No side effects: nothing pulled, verified, or fetched, and no
+        # payload directory was created.
+        mock_pull.assert_not_called()
+        mock_run.assert_not_called()
+        mock_load.assert_not_called()
+        assert not (tmp_path / "files").exists()

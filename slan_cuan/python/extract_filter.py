@@ -19,7 +19,7 @@ from pathlib import Path
 
 import click
 
-from slan_cuan.models import GlobalContext, ImageReference
+from slan_cuan.models import GlobalContext, parse_image_ref
 from slan_cuan.oci import OrasError, pull
 from slan_cuan.provenance import (
     DEFAULT_PROVENANCE_KEY,
@@ -77,11 +77,30 @@ def extract_filter(
     """Extract a Python release payload and filter it by build-index purls."""
     images = snapshot_component_images(snapshot_path)
 
+    # The release filter scope is the single component image's index;
+    # multi-component snapshots are rejected rather than silently
+    # filtered against an arbitrary one. Checked before any network
+    # work (pulls, cosign) so the fast-fail is free.
+    if len(images) != 1:
+        raise click.ClickException(
+            "Release filtering supports exactly one component image, "
+            f"snapshot has {len(images)}: {', '.join(images)}"
+        )
+
+    if ctx.dry_run:
+        # Side-effect-free preview, matching the java extract dry-run
+        # convention: exit before any registry pull, cosign run, or
+        # build-index fetch touches the network or the filesystem.
+        click.echo(f"Would extract payload from {images[0]} into {files_dir}")
+        click.echo("Would fetch Chains provenance for the component image")
+        click.echo("Would filter the payload against the build-index purls")
+        return
+
     files_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Extract distribution files from every component image.
+    # 1. Extract distribution files from the component image.
     for image_ref_str in images:
-        img_ref = ImageReference.parse(image_ref_str)
+        img_ref = parse_image_ref(image_ref_str)
         try:
             pull(
                 img_ref,
@@ -92,7 +111,7 @@ def extract_filter(
         except OrasError as e:
             raise click.ClickException(f"OCI error: {e.message}") from e
 
-    # 2. Fetch Chains provenance for every component image; wheel signing
+    # 2. Fetch Chains provenance for the component image; wheel signing
     #    consumes it downstream to build PEP 740 attestations.
     for image_ref_str in images:
         fetch_chains_provenance(
@@ -103,35 +122,19 @@ def extract_filter(
             verbose=ctx.verbose,
         )
 
-    # 3. Filter against the build-index. The release filter scope is the
-    #    single component image's index; multi-component snapshots are
-    #    rejected rather than silently filtered against an arbitrary one.
-    if len(images) != 1:
-        raise click.ClickException(
-            "Release filtering supports exactly one component image, "
-            f"snapshot has {len(images)}: {', '.join(images)}"
-        )
-
+    # 3. Filter against the build-index.
     index_data, build_index_digest = load_build_index(
         images[0], registry_auth_file, verbose=ctx.verbose
     )
     purls = purls_from_index(index_data)
-
-    if ctx.dry_run:
-        click.echo(f"Build index digest: {build_index_digest}")
-        click.echo(f"Purls in build-index: {len(purls)}")
-        click.echo(f"Publish all: {publish_all}")
 
     kept, removed = apply_release_scope_filter(
         files_dir,
         purls,
         publish_all,
         build_index_digest=build_index_digest,
-        dry_run=ctx.dry_run,
     )
 
-    if ctx.dry_run:
-        return
     if ctx.tekton_results_dir:
         write_tekton_result(
             ctx.tekton_results_dir,

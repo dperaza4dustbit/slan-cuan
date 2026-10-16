@@ -22,9 +22,20 @@ class TestHelpers:
         assert canonicalize_name("simple") == "simple"
 
     def test_parse_pypi_purl(self) -> None:
-        """Parse PyPI PURLs into canonical name and version."""
-        assert parse_pypi_purl("pkg:pypi/Flask@2.0.1") == ("flask", "2.0.1")
+        """Parse PyPI PURLs into PURL name, canonical name, and version."""
+        # PURL name: lowercase, underscores to hyphens, dots preserved
+        assert parse_pypi_purl("pkg:pypi/Flask@2.0.1") == (
+            "flask",
+            "flask",
+            "2.0.1",
+        )
+        assert parse_pypi_purl("pkg:pypi/zope.interface@6.1") == (
+            "zope.interface",
+            "zope-interface",
+            "6.1",
+        )
         assert parse_pypi_purl("pkg:pypi/my_pkg@1.0.0?extension=whl") == (
+            "my-pkg",
             "my-pkg",
             "1.0.0",
         )
@@ -43,6 +54,17 @@ class TestHelpers:
         assert (
             get_base_artifact_filename("foo-1.0-py3-none-any.whl")
             == "foo-1.0-py3-none-any.whl"
+        )
+
+    def test_get_base_artifact_filename_strips_chained_suffixes(self) -> None:
+        """Chained sidecar extensions (checksum of a signature) strip fully."""
+        assert (
+            get_base_artifact_filename("foo-1.0-py3-none-any.whl.asc.sha256")
+            == "foo-1.0-py3-none-any.whl"
+        )
+        assert (
+            get_base_artifact_filename("foo-1.0.tar.gz.sig.md5")
+            == "foo-1.0.tar.gz"
         )
 
     def test_get_purl_candidate_patterns_and_matching(self) -> None:
@@ -95,6 +117,28 @@ class TestHelpers:
         assert not matches_any_candidate("invalid.whl", pats)
         assert not matches_any_candidate("other-1.2.3.tar.gz", pats)
 
+    def test_dotted_name_sdist_candidates(self) -> None:
+        """Dotted PyPI names keep the dot in their sdist filenames.
+
+        zope.interface and friends publish sdists whose filename keeps
+        the literal dot; PEP 503 canonicalization would collapse it and
+        wrongly filter the sdist out as out-of-scope.
+        """
+        pats = get_purl_candidate_patterns("pkg:pypi/zope.interface@6.1")
+        assert "zope_interface-6.1-py3-none-any.whl" in pats
+        assert "zope_interface-6.1-*.whl" in pats
+        assert "zope.interface-6.1.tar.gz" in pats
+        assert "zope-interface-6.1.tar.gz" in pats
+        assert "zope_interface-6.1.tar.gz" in pats
+        # The real, as-published sdist filename matches
+        assert matches_any_candidate("zope.interface-6.1.tar.gz", pats)
+        assert matches_any_candidate("zope.interface-6.1.tar.gz.asc", pats)
+        assert matches_any_candidate("zope_interface-6.1.tar.gz", pats)
+        assert matches_any_candidate("zope_interface-6.1-py3-none-any.whl", pats)
+        # Another dotted project: ruamel.yaml
+        pats_yaml = get_purl_candidate_patterns("pkg:pypi/ruamel.yaml@0.18.6")
+        assert matches_any_candidate("ruamel.yaml-0.18.6.tar.gz", pats_yaml)
+
 
 class TestIsDistributionFilename:
     """Tests for the distribution-shape removal predicate."""
@@ -113,6 +157,11 @@ class TestIsDistributionFilename:
         assert is_distribution_filename("foo-1.0-py3-none-any.whl.sha256")
         assert is_distribution_filename("foo-1.0.tar.gz.asc")
         assert is_distribution_filename("foo-1.0-py3-none-any.whl.sig")
+
+    def test_chained_sidecars_are_distribution_files(self) -> None:
+        """Checksums of detached signatures follow their base artifact."""
+        assert is_distribution_filename("foo-1.0-py3-none-any.whl.asc.sha256")
+        assert is_distribution_filename("foo-1.0.tar.gz.sig.md5")
 
     def test_metadata_is_not_distribution(self) -> None:
         """Metadata files (provenance, JSON) must never match."""

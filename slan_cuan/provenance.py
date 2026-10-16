@@ -18,7 +18,7 @@ from pathlib import Path
 
 import click
 
-from slan_cuan.models import ImageReference
+from slan_cuan.models import parse_image_ref
 
 DEFAULT_PROVENANCE_KEY = "k8s://openshift-pipelines/public-key"
 
@@ -37,7 +37,7 @@ def fetch_chains_provenance(
     ``<digest>.json`` so downstream consumers can match provenance to
     the image that produced it.
     """
-    img_ref = ImageReference.parse(image_ref_str)
+    img_ref = parse_image_ref(image_ref_str)
     if not img_ref.digest:
         raise click.ClickException(
             "Image reference must include a digest for provenance "
