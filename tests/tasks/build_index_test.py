@@ -17,7 +17,8 @@ from slan_cuan.models import (
 from slan_cuan.tasks.build_index import (
     canonicalize_name,
     get_base_artifact_filename,
-    parse_artifact_coordinate,
+    get_purl_candidate_patterns,
+    matches_any_candidate,
     parse_pypi_purl,
 )
 
@@ -55,31 +56,45 @@ class TestHelpers:
             == "foo-1.0-py3-none-any.whl"
         )
 
-    def test_parse_artifact_coordinate_wheel(self) -> None:
-        """Extract canonical name and version from wheel filenames."""
-        assert parse_artifact_coordinate("foo_bar-1.2.3-py3-none-any.whl") == (
-            "foo-bar",
-            "1.2.3",
-        )
-        assert parse_artifact_coordinate(
-            "foo_bar-1.2.3-py3-none-any.whl.sha512"
-        ) == ("foo-bar", "1.2.3")
+    def test_get_purl_candidate_patterns_and_matching(self) -> None:
+        """Test candidate pattern generation and matching across PEP 427/PEP 440 variants."""
+        # Standard purl
+        pats = get_purl_candidate_patterns("pkg:pypi/foo-bar@1.2.3")
+        assert "foo_bar-1.2.3-py3-none-any.whl" in pats
+        assert "foo_bar-1.2.3-*.whl" in pats
+        assert "foo-bar-1.2.3.tar.gz" in pats
+        assert "foo_bar-1.2.3.tar.gz" in pats
+        assert matches_any_candidate("foo_bar-1.2.3-py3-none-any.whl", pats)
+        assert matches_any_candidate("foo_bar-1.2.3-py3-none-any.whl.sha512", pats)
+        assert matches_any_candidate("foo-bar-1.2.3.tar.gz", pats)
+        assert matches_any_candidate("foo_bar-1.2.3.tar.gz.sig", pats)
 
-    def test_parse_artifact_coordinate_sdist(self) -> None:
-        """Extract canonical name and version from sdist filenames."""
-        assert parse_artifact_coordinate("foo-bar-1.2.3.tar.gz") == (
-            "foo-bar",
-            "1.2.3",
-        )
-        assert parse_artifact_coordinate("foo_bar-1.2.3.tar.gz.sig") == (
-            "foo-bar",
-            "1.2.3",
-        )
+        # Hyphenated version sdist
+        pats_hyphen = get_purl_candidate_patterns("pkg:pypi/my-pkg@1.0.0-beta")
+        assert "my_pkg-1.0.0_beta-*.whl" in pats_hyphen
+        assert "my-pkg-1.0.0-beta.tar.gz" in pats_hyphen
+        assert "my_pkg-1.0.0-beta.tar.gz" in pats_hyphen
+        assert matches_any_candidate("my-pkg-1.0.0-beta.tar.gz", pats_hyphen)
+        assert matches_any_candidate("my_pkg-1.0.0-beta.tar.gz", pats_hyphen)
 
-    def test_parse_artifact_coordinate_unknown(self) -> None:
-        """Return None for unrecognized file names."""
-        assert parse_artifact_coordinate("random-file.txt") is None
-        assert parse_artifact_coordinate("invalid.whl") is None
+        # Local version wheel: '+' and '.' in local versions escaped to '_'
+        pats_local = get_purl_candidate_patterns("pkg:pypi/my-pkg@1.0.0+rhlw.1")
+        assert "my_pkg-1.0.0_rhlw.1-py3-none-any.whl" in pats_local
+        assert "my_pkg-1.0.0_rhlw.1-*.whl" in pats_local
+        assert matches_any_candidate("my_pkg-1.0.0_rhlw.1-py3-none-any.whl", pats_local)
+        assert matches_any_candidate("my_pkg-1.0.0_rhlw.1-cp39-cp39-linux_x86_64.whl", pats_local)
+
+        # Case variants
+        assert matches_any_candidate("Foo_Bar-1.2.3-py3-none-any.whl", pats)
+        assert matches_any_candidate("FOO-BAR-1.2.3.TAR.GZ", pats)
+
+        # Multi-glob wheel tags
+        assert matches_any_candidate("foo_bar-1.2.3-cp311-cp311-manylinux_2_17_x86_64.whl", pats)
+
+        # Unmatched / unknown files
+        assert not matches_any_candidate("random-file.txt", pats)
+        assert not matches_any_candidate("invalid.whl", pats)
+        assert not matches_any_candidate("other-1.2.3.tar.gz", pats)
 
 
 class TestBuildIndexFilterCommand:
@@ -392,3 +407,66 @@ class TestBuildIndexFilterCommand:
         assert (payload_dir / "extra_pkg-0.1.0-py3-none-any.whl").exists()
         assert not (payload_dir.parent / f"{payload_dir.name}-filtered").exists()
         assert not (payload_dir.parent / FILTER_REPORT_FILENAME).exists()
+
+    @patch("slan_cuan.tasks.build_index.pull")
+    @patch("slan_cuan.tasks.build_index.discover")
+    def test_missing_build_index_json_fails_closed(
+        self,
+        mock_discover: MagicMock,
+        mock_pull: MagicMock,
+        runner: CliRunner,
+        payload_dir: Path,
+    ) -> None:
+        """Fail closed when build-index.json is missing in pulled referrer."""
+        mock_discover.return_value = [
+            {"artifactType": BUILD_INDEX_MEDIA_TYPE, "digest": "sha256:aaa"}
+        ]
+        # Pull creates an arbitrary json file instead of build-index.json
+        mock_pull.side_effect = lambda ref, dest, **kwargs: (
+            dest / "arbitrary.json"
+        ).write_text(json.dumps({"purls": []}))
+
+        res = runner.invoke(
+            main,
+            [
+                "build-index-filter",
+                "--image-ref",
+                "quay.io/repo@sha256:1111",
+                "--payload-dir",
+                str(payload_dir),
+            ],
+        )
+        assert res.exit_code != 0
+        assert "No build-index.json found after pulling referrer" in res.output
+
+    @patch("slan_cuan.tasks.build_index.deduplicate_referrers")
+    @patch("slan_cuan.tasks.build_index.discover")
+    def test_deduplicate_referrers_oras_error_handling(
+        self,
+        mock_discover: MagicMock,
+        mock_dedup: MagicMock,
+        runner: CliRunner,
+        payload_dir: Path,
+    ) -> None:
+        """Wrap OrasError from deduplicate_referrers into ClickException."""
+        from slan_cuan.oci import OrasError
+
+        mock_discover.return_value = [
+            {"artifactType": BUILD_INDEX_MEDIA_TYPE, "digest": "sha256:aaa"}
+        ]
+        mock_dedup.side_effect = OrasError(
+            "failed to inspect manifest", "raw error", 1
+        )
+
+        res = runner.invoke(
+            main,
+            [
+                "build-index-filter",
+                "--image-ref",
+                "quay.io/repo@sha256:1111",
+                "--payload-dir",
+                str(payload_dir),
+            ],
+        )
+        assert res.exit_code != 0
+        assert "OCI error: failed to inspect manifest" in res.output

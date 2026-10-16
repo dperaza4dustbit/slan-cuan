@@ -13,15 +13,30 @@ metadata:
     tekton.dev/tags: "release,filtering,build-index"
 spec:
   description: >-
-    Filter payload directory artifacts against build-index.json purls.
+    Filter a payload directory against build-index purls using
+    `slan-cuan build-index-filter`. Discovers the build-index.json OCI
+    referrer on the component image, fails closed if missing or ambiguous,
+    dedupes identical referrers, and moves non-matching payload files to a
+    filtered sibling directory. Remediated releases keep only artifacts
+    whose coordinates match index purls; validated releases can pass
+    PUBLISH_ALL="true" to keep all artifacts.
+
+    Resolved directly by the calunga-push-to-pulp-lightwell managed
+    pipeline (release-service-catalog) via its slanCuanGitUrl and
+    slanCuanGitRevision params -- the same resolution pattern the java
+    release flow uses for the other slan-cuan tasks. The input Trusted
+    Artifact (the extracted payload) is restored under dataDir and the
+    filtered payload is published as a new Trusted Artifact. Registry
+    credentials for referrer discovery are mounted from the
+    REGISTRY_AUTH_SECRET Secret.
   params:
     - name: IMAGE_REF
       description: Container image reference (digest-pinned) to discover build-index from.
       type: string
     - name: PAYLOAD_DIR
-      description: Directory containing payload files to filter.
+      description: Directory (under dataDir) containing payload files to filter.
       type: string
-      default: /var/workdir/extracted
+      default: /var/workdir/files
     - name: PUBLISH_ALL
       description: Publish all artifacts without filtering by build-index purls.
       type: string
@@ -30,6 +45,40 @@ spec:
       description: K8s Secret name for registry auth (.dockerconfigjson format).
       type: string
       default: "registry-auth"
+    - name: dataDir
+      description: The location where data will be stored.
+      type: string
+      default: /var/workdir
+    - name: sourceDataArtifact
+      description: Trusted Artifact URI containing the extracted payload files to filter.
+      type: string
+    - name: ociStorage
+      description: The OCI repository where the Trusted Artifacts are stored.
+      type: string
+    - name: ociArtifactExpiresAfter
+      description: Expiration date for the trusted artifact in the OCI repository.
+      type: string
+      default: "1d"
+    - name: orasOptions
+      description: oras options to pass to Trusted Artifacts calls.
+      type: string
+      default: ""
+    - name: caTrustConfigMapName
+      description: The name of the ConfigMap to read CA bundle data from.
+      type: string
+      default: "trusted-ca"
+    - name: caTrustConfigMapKey
+      description: The name of the key in the ConfigMap that contains the CA bundle data.
+      type: string
+      default: "ca-bundle.crt"
+    - name: catalogGitUrl
+      description: The url to the git repo where the release-service-catalog stepactions are stored.
+      type: string
+      default: https://github.com/konflux-lightwell/release-service-catalog.git
+    - name: catalogGitRevision
+      description: The revision in the catalogGitUrl repo to be used.
+      type: string
+      default: main
   results:
     - name: CONSUMED_BUILD_INDEX_DIGEST
       description: Sha256 digest of the consumed build-index.json referrer.
@@ -37,12 +86,42 @@ spec:
       description: Count of payload files kept after filtering.
     - name: REMOVED_COUNT
       description: Count of payload files removed to the filtered sibling directory.
+    - name: sourceDataArtifact
+      description: Trusted Artifact URI containing the filtered payload directory.
+      type: string
   stepTemplate:
     volumeMounts:
       - mountPath: /var/workdir
         name: workdir
+      - name: trusted-ca
+        mountPath: /mnt/trusted-ca
+        readOnly: true
+    securityContext:
+      runAsNonRoot: true
+      readOnlyRootFilesystem: false
   steps:
+    - name: use-trusted-artifact
+      ref:
+        resolver: git
+        params:
+          - name: url
+            value: $(params.catalogGitUrl)
+          - name: revision
+            value: $(params.catalogGitRevision)
+          - name: pathInRepo
+            value: stepactions/use-trusted-artifact/use-trusted-artifact.yaml
+      params:
+        - name: workDir
+          value: $(params.dataDir)
+        - name: sourceDataArtifact
+          value: $(params.sourceDataArtifact)
+        - name: orasOptions
+          value: $(params.orasOptions)
+        - name: caCertPath
+          value: /mnt/trusted-ca/$(params.caTrustConfigMapKey)
     - name: run
+      # Re-pin to an immutable @sha256: digest once the slan-cuan release
+      # containing build-index-filter ships.
       image: quay.io/light-castle/slan-cuan:latest
       imagePullPolicy: Always
       args:
@@ -62,9 +141,34 @@ spec:
         - name: registry-auth
           mountPath: /auth
           readOnly: true
+    - name: create-trusted-artifact
+      ref:
+        resolver: git
+        params:
+          - name: url
+            value: $(params.catalogGitUrl)
+          - name: revision
+            value: $(params.catalogGitRevision)
+          - name: pathInRepo
+            value: stepactions/create-trusted-artifact/create-trusted-artifact.yaml
+      params:
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: workDir
+          value: $(params.dataDir)
+        - name: sourceDataArtifact
+          value: $(results.sourceDataArtifact.path)
+        - name: orasOptions
+          value: $(params.orasOptions)
+        - name: caCertPath
+          value: /mnt/trusted-ca/$(params.caTrustConfigMapKey)
   volumes:
     - name: workdir
       emptyDir: {}
     - name: registry-auth
       secret:
         secretName: $(params.REGISTRY_AUTH_SECRET)
+    - name: trusted-ca
+      configMap:
+        name: $(params.caTrustConfigMapName)
+        optional: true

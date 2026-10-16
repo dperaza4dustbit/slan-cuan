@@ -58,29 +58,50 @@ def get_base_artifact_filename(filename: str) -> str:
     return filename
 
 
-def parse_artifact_coordinate(filename: str) -> tuple[str, str] | None:
-    """Extract (canonical_name, version) from a wheel or sdist filename.
+def get_purl_candidate_patterns(purl_str: str) -> set[str]:
+    """Generate expected filename patterns for a PyPI PURL.
 
-    Handles wheel filenames ('name-version-...whl') and
-    sdists ('name-version.tar.gz').
-    Returns None if filename is not a recognized artifact format.
+    Derives candidate artifact filenames from PURL coordinates:
+    - Wheel: name with '-' -> '_' (PEP 503-ish), version with runs of
+      non-alphanumeric chars (esp. '+' and '.' in local versions, or '-')
+      escaped to '_' per PEP 427:
+      '{name}-{version}-py3-none-any.whl' plus '{name}-{version}-*.whl' glob.
+    - Sdist: '{name}-{version}.tar.gz' (both hyphen and underscore name variants).
     """
-    base_name = get_base_artifact_filename(filename)
-    if base_name.endswith(".whl"):
-        stem = base_name[:-4]
-        parts = stem.split("-")
-        if len(parts) >= 2:
-            return canonicalize_name(parts[0]), parts[1]
-        return None
+    coord = parse_pypi_purl(purl_str)
+    if not coord:
+        return set()
 
-    if base_name.endswith(".tar.gz"):
-        stem = base_name[:-7]
-        dist_name, sep, version = stem.rpartition("-")
-        if sep and dist_name and version:
-            return canonicalize_name(dist_name), version
-        return None
+    canonical_name, version = coord
+    wheel_name = canonical_name.replace("-", "_")
+    wheel_version = re.sub(r"[^\w.]+", "_", version)
 
-    return None
+    sdist_name_hyphen = canonical_name
+    sdist_name_underscore = wheel_name
+
+    patterns = {
+        f"{wheel_name}-{wheel_version}-py3-none-any.whl",
+        f"{wheel_name}-{wheel_version}-*.whl",
+        f"{sdist_name_hyphen}-{version}.tar.gz",
+        f"{sdist_name_underscore}-{version}.tar.gz",
+    }
+    return patterns
+
+
+def matches_any_candidate(filename: str, candidates: set[str]) -> bool:
+    """Check if filename matches any candidate pattern case-insensitively."""
+    import fnmatch
+
+    base_name = get_base_artifact_filename(filename).lower()
+    for pattern in candidates:
+        pat_lower = pattern.lower()
+        if "*" in pat_lower:
+            if fnmatch.fnmatchcase(base_name, pat_lower):
+                return True
+        else:
+            if base_name == pat_lower:
+                return True
+    return False
 
 
 @click.command("build-index-filter")
@@ -145,14 +166,17 @@ def build_index_filter(
             f"No build-index referrer found for {image_ref}"
         )
 
-    referrer = deduplicate_referrers(
-        referrers,
-        BUILD_INDEX_MEDIA_TYPE,
-        img_ref,
-        registry_auth_file=registry_auth_file,
-        verbose=ctx.verbose,
-        manifest_fetch_fn=manifest_fetch,
-    )
+    try:
+        referrer = deduplicate_referrers(
+            referrers,
+            BUILD_INDEX_MEDIA_TYPE,
+            img_ref,
+            registry_auth_file=registry_auth_file,
+            verbose=ctx.verbose,
+            manifest_fetch_fn=manifest_fetch,
+        )
+    except OrasError as e:
+        raise click.ClickException(f"OCI error: {e.message}") from e
     if not referrer or not referrer.get("digest"):
         raise click.ClickException(
             f"No valid build-index referrer found for {image_ref}"
@@ -180,9 +204,7 @@ def build_index_filter(
 
         index_file = tmp_path / "build-index.json"
         if not index_file.is_file():
-            candidates = list(tmp_path.rglob("build-index.json")) or list(
-                tmp_path.rglob("*.json")
-            )
+            candidates = list(tmp_path.rglob("build-index.json"))
             if candidates:
                 index_file = candidates[0]
             else:
@@ -212,20 +234,21 @@ def build_index_filter(
             f"got {type(raw_purls).__name__}"
         )
 
-    allowed_coordinates: set[tuple[str, str]] = set()
+    allowed_patterns: set[str] = set()
+    purl_count = 0
     for purl_str in raw_purls:
         if isinstance(purl_str, str):
-            coord = parse_pypi_purl(purl_str)
-            if coord:
-                allowed_coordinates.add(coord)
+            pats = get_purl_candidate_patterns(purl_str)
+            if pats:
+                allowed_patterns.update(pats)
+                purl_count += 1
 
     all_files = sorted(f for f in payload_dir.rglob("*") if f.is_file())
     kept_files: list[Path] = []
     removed_files: list[Path] = []
 
     for f in all_files:
-        coord = parse_artifact_coordinate(f.name)
-        if publish_all or (coord is not None and coord in allowed_coordinates):
+        if publish_all or matches_any_candidate(f.name, allowed_patterns):
             kept_files.append(f)
         else:
             removed_files.append(f)
@@ -235,7 +258,7 @@ def build_index_filter(
 
     if ctx.dry_run:
         click.echo(f"Build index digest: {build_index_digest}")
-        click.echo(f"Purls in build-index: {len(allowed_coordinates)}")
+        click.echo(f"Purls in build-index: {purl_count}")
         click.echo(f"Publish all: {publish_all}")
         click.echo(
             f"dry-run: would keep {len(kept_files)} file(s), "
