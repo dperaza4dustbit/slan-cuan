@@ -275,6 +275,57 @@ def _classify_osv_source(file_path: Path) -> str | None:
     return _source_from_osv_id(file_path.stem)
 
 
+def _classify_cdx_source(record: dict[str, Any], file_path: Path) -> str | None:
+    """Classify a CycloneDX SBOM or VEX by its CVE content.
+
+    VEX: extracts vuln IDs from ``vulnerabilities[].id``.
+    SBOM: extracts vuln IDs from ``pedigree.patches[].resolves[].id``.
+    Classifies using ``_source_from_osv_id`` (CVE- -> pnc-build,
+    LW- -> novel-pipeline). Returns None when no IDs are found.
+    """
+    ids: list[str] = []
+
+    for vuln in record.get("vulnerabilities", []):
+        if isinstance(vuln, dict):
+            vid = vuln.get("id", "")
+            if vid:
+                ids.append(vid)
+
+    for comp in record.get("components", []):
+        if not isinstance(comp, dict):
+            continue
+        pedigree = comp.get("pedigree", {})
+        if not isinstance(pedigree, dict):
+            continue
+        for patch in pedigree.get("patches", []):
+            if not isinstance(patch, dict):
+                continue
+            for resolve in patch.get("resolves", []):
+                if isinstance(resolve, dict):
+                    rid = resolve.get("id", "")
+                    if rid:
+                        ids.append(rid)
+
+    if not ids:
+        # Filename may carry a CVE prefix (e.g. CVE-2024-1234-...)
+        stem = file_path.stem
+        if stem.endswith(".bom"):
+            stem = stem[: -len(".bom")]
+        by_stem = _source_from_osv_id(stem)
+        if by_stem:
+            return by_stem
+        return None
+
+    sources = {_source_from_osv_id(i) for i in ids} - {None}
+    if len(sources) == 1:
+        return sources.pop()
+    if not sources:
+        return None
+    # Mixed sources — default to pnc-build (CVE backports are
+    # the dominant case; novel-only VEX is less common).
+    return "pnc-build"
+
+
 def _list_entries(path: Path, recursive: bool = False) -> None:
     """List directory contents for diagnostics, capped."""
     try:
@@ -389,15 +440,25 @@ def _retrieve_uploadable_metadata(
     kept: list[Path] = []
     dropped: list[Path] = []
     for metadata_file in security_metadata_files:
-        # CycloneDX SBOM/VEX files (bomFormat == "CycloneDX") inherit
-        # the routing of the OSV records they accompany — they are not
-        # source-routed independently. Keep them with the batch.
+        # CycloneDX SBOM/VEX: classify by CVE content, not by
+        # database_specific (which CycloneDX files lack).
         cdx_record = safe_json_load(metadata_file, raise_on_err=False)
         if (
             isinstance(cdx_record, dict)
             and cdx_record.get("bomFormat") == "CycloneDX"
         ):
-            kept.append(metadata_file)
+            cdx_source = _classify_cdx_source(cdx_record, metadata_file)
+            if cdx_source == expected_source or cdx_source is None:
+                kept.append(metadata_file)
+            else:
+                dropped.append(metadata_file)
+                click.echo(
+                    f"Warning: skipping CycloneDX "
+                    f"{metadata_file.name} "
+                    f"(source={cdx_source}); does not "
+                    f"belong in {expected_source} repo "
+                    f"'{pulp_file_repository}'."
+                )
             continue
 
         record_source = _classify_osv_source(metadata_file)
