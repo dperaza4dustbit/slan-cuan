@@ -16,10 +16,13 @@ spec:
     Filter a payload directory against build-index purls using
     `slan-cuan build-index-filter`. Discovers the build-index.json OCI
     referrer on the component image, fails closed if missing or ambiguous,
-    dedupes identical referrers, and moves non-matching payload files to a
-    filtered sibling directory. Remediated releases keep only artifacts
-    whose coordinates match index purls; validated releases can pass
-    PUBLISH_ALL="true" to keep all artifacts.
+    dedupes identical referrers, and moves out-of-scope distribution files
+    (wheels/sdists/sidecars) to a filtered sibling directory.
+    Non-distribution payload content (e.g. the chains-provenance/ metadata
+    consumed by rh-sign-python-wheels for PEP 740 attestations) passes
+    through untouched. Remediated releases keep only distribution
+    artifacts whose coordinates match index purls; validated releases can
+    pass PUBLISH_ALL="true" to keep all artifacts.
 
     Resolved directly by the calunga-push-to-pulp-lightwell managed
     pipeline (release-service-catalog) via its slanCuanGitUrl and

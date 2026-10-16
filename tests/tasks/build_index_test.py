@@ -115,6 +115,11 @@ class TestBuildIndexFilterCommand:
         (p / "extra_pkg-0.1.0-py3-none-any.whl").write_bytes(b"extra wheel")
         (p / "companion-1.0.0.tar.gz").write_bytes(b"companion sdist")
         (p / "other-9.9.9.tar.gz").write_bytes(b"other sdist")
+        # Metadata written by extract-py-artifacts: must survive filtering
+        # because rh-sign-python-wheels consumes it for PEP 740 attestations.
+        prov = p / "chains-provenance"
+        prov.mkdir()
+        (prov / "sha256:abc123.json").write_text('{"predicate": {}}')
         return p
 
     def test_missing_digest_in_image_ref(
@@ -233,7 +238,11 @@ class TestBuildIndexFilterCommand:
             ],
         )
         assert res.exit_code == 0, res.output
-        assert "Filtered payload: 2 kept, 3 removed." in res.output
+        assert "Filtered payload: 3 kept, 3 removed." in res.output
+
+        # Chains provenance metadata must survive filtering (LWLP-3276:
+        # rh-sign-python-wheels consumes it for PEP 740 attestations).
+        assert (payload_dir / "chains-provenance" / "sha256:abc123.json").exists()
 
     @patch("slan_cuan.tasks.build_index.pull")
     @patch("slan_cuan.tasks.build_index.discover")
@@ -264,7 +273,11 @@ class TestBuildIndexFilterCommand:
             ],
         )
         assert res.exit_code == 0, res.output
-        assert "Filtered payload: 2 kept, 3 removed." in res.output
+        assert "Filtered payload: 3 kept, 3 removed." in res.output
+
+        # Chains provenance metadata must survive filtering (LWLP-3276:
+        # rh-sign-python-wheels consumes it for PEP 740 attestations).
+        assert (payload_dir / "chains-provenance" / "sha256:abc123.json").exists()
 
     @patch("slan_cuan.tasks.build_index.pull")
     @patch("slan_cuan.tasks.build_index.manifest_fetch")
@@ -314,7 +327,7 @@ class TestBuildIndexFilterCommand:
             ],
         )
         assert res.exit_code == 0, res.output
-        assert "Filtered payload: 3 kept, 2 removed." in res.output
+        assert "Filtered payload: 4 kept, 2 removed." in res.output
 
         # Verify kept files
         assert (payload_dir / "flask-2.0.1-py3-none-any.whl").exists()
@@ -322,6 +335,8 @@ class TestBuildIndexFilterCommand:
         assert (payload_dir / "companion-1.0.0.tar.gz").exists()
         assert not (payload_dir / "extra_pkg-0.1.0-py3-none-any.whl").exists()
         assert not (payload_dir / "other-9.9.9.tar.gz").exists()
+        # Metadata passes through untouched (signing consumes it downstream)
+        assert (payload_dir / "chains-provenance" / "sha256:abc123.json").exists()
 
         # Verify removed sibling dir
         filtered_dir = payload_dir.parent / f"{payload_dir.name}-filtered"
@@ -332,14 +347,96 @@ class TestBuildIndexFilterCommand:
         report_file = payload_dir.parent / FILTER_REPORT_FILENAME
         assert report_file.exists()
         report = json.loads(report_file.read_text())
-        assert report["kept_count"] == 3
+        assert report["kept_count"] == 4
         assert report["removed_count"] == 2
         assert "consumed_build_index_digest" in report
 
         # Verify Tekton results
-        assert (results_dir / "KEPT_COUNT").read_text() == "3"
+        assert (results_dir / "KEPT_COUNT").read_text() == "4"
         assert (results_dir / "REMOVED_COUNT").read_text() == "2"
         assert (results_dir / "CONSUMED_BUILD_INDEX_DIGEST").exists()
+
+    @patch("slan_cuan.tasks.build_index.pull")
+    @patch("slan_cuan.tasks.build_index.discover")
+    def test_unmappable_purl_fails_closed(
+        self,
+        mock_discover: MagicMock,
+        mock_pull: MagicMock,
+        runner: CliRunner,
+        payload_dir: Path,
+    ) -> None:
+        """A purl that yields no filename candidates is a hard error.
+
+        If we cannot map a purl to filename candidates, its artifacts would
+        be treated as out-of-scope and removed -- wrong for in-scope content.
+        Wrong-ecosystem purls (e.g. maven) and versionless purls land here.
+        """
+        mock_discover.return_value = [
+            {"artifactType": BUILD_INDEX_MEDIA_TYPE, "digest": "sha256:aaa"}
+        ]
+        mock_pull.side_effect = lambda ref, dest, **kwargs: (
+            dest / "build-index.json"
+        ).write_text(
+            json.dumps(
+                {"purls": ["pkg:pypi/Flask@2.0.1", "pkg:maven/org.apache/x@1.0"]}
+            )
+        )
+
+        res = runner.invoke(
+            main,
+            [
+                "build-index-filter",
+                "--image-ref",
+                "quay.io/repo@sha256:1111",
+                "--payload-dir",
+                str(payload_dir),
+            ],
+        )
+        assert res.exit_code != 0
+        assert "no filename candidates" in res.output
+        assert "pkg:maven/org.apache/x@1.0" in res.output
+        # Nothing was touched on disk
+        assert (payload_dir / "flask-2.0.1-py3-none-any.whl").exists()
+
+    @patch("slan_cuan.tasks.build_index.pull")
+    @patch("slan_cuan.tasks.build_index.discover")
+    def test_non_distribution_files_pass_through(
+        self,
+        mock_discover: MagicMock,
+        mock_pull: MagicMock,
+        runner: CliRunner,
+        payload_dir: Path,
+    ) -> None:
+        """Only distribution-shaped files are removed; metadata survives.
+
+        extract-py-artifacts writes chains-provenance/ into the payload dir
+        and rh-sign-python-wheels (running after this filter in calunga)
+        consumes it to build PEP 740 attestations. Removing it would
+        silently downgrade attestations to the minimal predicate fallback.
+        """
+        mock_discover.return_value = [
+            {"artifactType": BUILD_INDEX_MEDIA_TYPE, "digest": "sha256:aaa"}
+        ]
+        mock_pull.side_effect = lambda ref, dest, **kwargs: (
+            dest / "build-index.json"
+        ).write_text(json.dumps({"purls": ["pkg:pypi/Flask@2.0.1"]}))
+
+        res = runner.invoke(
+            main,
+            [
+                "build-index-filter",
+                "--image-ref",
+                "quay.io/repo@sha256:1111",
+                "--payload-dir",
+                str(payload_dir),
+            ],
+        )
+        assert res.exit_code == 0, res.output
+        prov = payload_dir / "chains-provenance" / "sha256:abc123.json"
+        assert prov.exists()
+        assert prov.read_text() == '{"predicate": {}}'
+        filtered_dir = payload_dir.parent / f"{payload_dir.name}-filtered"
+        assert not (filtered_dir / "chains-provenance").exists()
 
     @patch("slan_cuan.tasks.build_index.pull")
     @patch("slan_cuan.tasks.build_index.discover")
@@ -370,7 +467,7 @@ class TestBuildIndexFilterCommand:
             ],
         )
         assert res.exit_code == 0, res.output
-        assert "Filtered payload: 5 kept, 0 removed." in res.output
+        assert "Filtered payload: 6 kept, 0 removed." in res.output
         assert (payload_dir / "extra_pkg-0.1.0-py3-none-any.whl").exists()
 
     @patch("slan_cuan.tasks.build_index.pull")

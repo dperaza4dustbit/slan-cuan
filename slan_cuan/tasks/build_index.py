@@ -1,4 +1,11 @@
-"""Filter payload artifacts against build-index purls."""
+"""Filter payload artifacts against build-index purls.
+
+Keeps distribution files (wheels/sdists and their sidecars) whose purls are
+in the build-index ``purls`` release allow-list; moves out-of-scope
+distribution files to a sibling ``-filtered`` directory. Non-distribution
+files (e.g. the ``chains-provenance/`` metadata directory) always pass
+through untouched -- downstream signing consumes them.
+"""
 
 from __future__ import annotations
 
@@ -56,6 +63,29 @@ def get_base_artifact_filename(filename: str) -> str:
         if filename.endswith(suffix):
             return filename[: -len(suffix)]
     return filename
+
+
+_DIST_FILENAME_SUFFIXES = (
+    ".whl",
+    ".tar.gz",
+    ".tar.bz2",
+    ".tar.xz",
+    ".zip",
+)
+
+
+def is_distribution_filename(filename: str) -> bool:
+    """Whether a file looks like a Python distribution artifact or sidecar.
+
+    This is the filter's removal predicate: only distribution-shaped files
+    are ever removed. Anything else in the payload -- most importantly the
+    ``chains-provenance/`` directory that extract-py-artifacts writes and
+    rh-sign-python-wheels consumes to build PEP 740 attestations -- passes
+    through untouched. Non-distribution files are never upload targets for
+    twine, so passing them through cannot leak out-of-scope content.
+    """
+    base = get_base_artifact_filename(filename).lower()
+    return base.endswith(_DIST_FILENAME_SUFFIXES)
 
 
 def get_purl_candidate_patterns(purl_str: str) -> set[str]:
@@ -236,12 +266,26 @@ def build_index_filter(
 
     allowed_patterns: set[str] = set()
     purl_count = 0
+    unmapped_purls: list[str] = []
     for purl_str in raw_purls:
-        if isinstance(purl_str, str):
-            pats = get_purl_candidate_patterns(purl_str)
-            if pats:
-                allowed_patterns.update(pats)
-                purl_count += 1
+        if not isinstance(purl_str, str):
+            raise click.ClickException(
+                f"build-index 'purls' entries must be strings, "
+                f"got {type(purl_str).__name__}: {purl_str!r}"
+            )
+        pats = get_purl_candidate_patterns(purl_str)
+        if pats:
+            allowed_patterns.update(pats)
+            purl_count += 1
+        else:
+            unmapped_purls.append(purl_str)
+    if unmapped_purls:
+        # Fail closed: a purl we cannot map to filename candidates might
+        # name in-scope content whose files we would then wrongly remove.
+        raise click.ClickException(
+            "build-index purls yielded no filename candidates (unsupported "
+            f"ecosystem or missing version): {', '.join(sorted(unmapped_purls))}"
+        )
 
     all_files = sorted(f for f in payload_dir.rglob("*") if f.is_file())
     kept_files: list[Path] = []
@@ -250,8 +294,14 @@ def build_index_filter(
     for f in all_files:
         if publish_all or matches_any_candidate(f.name, allowed_patterns):
             kept_files.append(f)
-        else:
+        elif is_distribution_filename(f.name):
+            # Distribution-shaped but outside the release scope: remove.
             removed_files.append(f)
+        else:
+            # Non-distribution files (provenance, metadata) are not release
+            # content and are never uploaded; downstream tasks depend on
+            # them, so they pass through untouched.
+            kept_files.append(f)
 
     filtered_dir = payload_dir.parent / f"{payload_dir.name}-filtered"
     report_path = payload_dir.parent / FILTER_REPORT_FILENAME
