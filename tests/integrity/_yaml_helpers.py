@@ -101,9 +101,7 @@ def resolve_env_var_to_param(
     old_value = os.environ.get(env_var_name)
     os.environ[env_var_name] = sentinel
     try:
-        candidates = [
-            (p, ctx) for ctx in chain for p in ctx.command.params
-        ]
+        candidates = [(p, ctx) for ctx in chain for p in ctx.command.params]
         matches = [
             p for p, ctx in candidates if p.resolve_envvar_value(ctx) == sentinel
         ]

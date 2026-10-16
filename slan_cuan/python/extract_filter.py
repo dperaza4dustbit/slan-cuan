@@ -15,127 +15,23 @@ creation and nothing in the release path consumes
 
 from __future__ import annotations
 
-import base64
-import json
-import os
-import shutil
-import subprocess
-import tempfile
 from pathlib import Path
 
 import click
 
 from slan_cuan.models import GlobalContext, ImageReference
 from slan_cuan.oci import OrasError, pull
+from slan_cuan.provenance import (
+    DEFAULT_PROVENANCE_KEY,
+    fetch_chains_provenance,
+)
+from slan_cuan.snapshot import snapshot_component_images
 from slan_cuan.tasks.build_index import (
     apply_release_scope_filter,
     load_build_index,
     purls_from_index,
 )
 from slan_cuan.utils import write_tekton_result
-
-DEFAULT_PROVENANCE_KEY = "k8s://openshift-pipelines/public-key"
-
-
-def snapshot_component_images(snapshot_path: Path) -> list[str]:
-    """Read the container image references from a snapshot spec.
-
-    Fails closed when the file is missing, unparsable, or carries no
-    component images.
-    """
-    try:
-        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        raise click.ClickException(
-            f"Failed to parse snapshot spec {snapshot_path}: {e}"
-        ) from e
-
-    images = [
-        c.get("containerImage")
-        for c in snapshot.get("components", [])
-        if isinstance(c, dict) and c.get("containerImage")
-    ]
-    if not images:
-        raise click.ClickException(
-            f"No component containerImage entries in snapshot {snapshot_path}"
-        )
-    return images
-
-
-def fetch_chains_provenance(
-    image_ref_str: str,
-    provenance_dir: Path,
-    key_ref: str,
-    registry_auth_file: Path | None = None,
-    verbose: bool = False,
-) -> Path:
-    """Fetch and verify Tekton Chains SLSA provenance for an image.
-
-    Mirrors the ``fetch-chains-provenance`` step of the retired
-    extract-py-artifacts task: cosign verify-attestation against the
-    Chains public key, first DSSE envelope only, payload base64-decoded
-    and saved as ``<digest>.json`` so downstream consumers can match
-    provenance to the image that produced it.
-    """
-    img_ref = ImageReference.parse(image_ref_str)
-    if not img_ref.digest:
-        raise click.ClickException(
-            "Image reference must include a digest for provenance "
-            f"filenames: {image_ref_str}"
-        )
-
-    provenance_dir.mkdir(parents=True, exist_ok=True)
-    out_file = provenance_dir / f"{img_ref.digest}.json"
-
-    cmd = [
-        "cosign",
-        "verify-attestation",
-        "--type=slsaprovenance",
-        "--insecure-ignore-tlog=true",
-        "--insecure-ignore-sct=true",
-        "--key",
-        key_ref,
-        image_ref_str,
-    ]
-    env = os.environ.copy()
-    docker_config_dir = None
-    if registry_auth_file is not None:
-        # cosign (go-containerregistry) reads registry credentials from
-        # $DOCKER_CONFIG/config.json.
-        docker_config_dir = tempfile.mkdtemp(prefix="slan-cuan-cosign-")
-        shutil.copy(
-            registry_auth_file, Path(docker_config_dir) / "config.json"
-        )
-        env["DOCKER_CONFIG"] = docker_config_dir
-    try:
-        if verbose:
-            click.echo(f"Fetching Chains provenance for {image_ref_str}")
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, check=False, env=env
-        )
-        if result.returncode != 0:
-            raise click.ClickException(
-                "cosign verify-attestation failed for "
-                f"{image_ref_str}: {result.stderr.strip()}"
-            )
-        stdout = result.stdout.strip()
-        if not stdout:
-            raise click.ClickException(
-                "cosign verify-attestation returned no attestations for "
-                f"{image_ref_str}"
-            )
-        envelope = json.loads(stdout.splitlines()[0])
-        payload = json.loads(base64.b64decode(envelope["payload"]))
-        out_file.write_text(
-            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
-        )
-    finally:
-        if docker_config_dir is not None:
-            shutil.rmtree(docker_config_dir, ignore_errors=True)
-
-    if verbose:
-        click.echo(f"Saved Chains provenance to {out_file}")
-    return out_file
 
 
 @click.command("extract-filter")

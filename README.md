@@ -10,7 +10,9 @@ Shared core and per-ecosystem packages live side by side; an ecosystem kernel ne
 
 ```
 slan_cuan/            # shared core: OCI client, models, utils, Pulp/Trustify clients,
-                      #   and ecosystem-agnostic commands (register, generate-security-metadata, build-index-filter)
+                      #   snapshot parsing, Chains provenance fetching, and
+                      #   ecosystem-agnostic commands (register,
+                      #   generate-security-metadata, build-index-filter)
 slan_cuan/java/       # Java ecosystem: extract, sign, publish, maven helpers
 slan_cuan/python/     # Python ecosystem: PyPI filename/PURL kernel, extract+filter commands
 tekton/tasks/         # Tekton Task manifests, one per CLI subcommand

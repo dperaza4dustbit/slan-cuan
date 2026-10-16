@@ -12,15 +12,11 @@ from click.testing import CliRunner
 
 from slan_cuan.cli import main
 from slan_cuan.models import FILTER_REPORT_FILENAME
-from slan_cuan.python.extract_filter import (
-    fetch_chains_provenance,
-    snapshot_component_images,
-)
 
 IMAGE = "quay.io/repo/wheels@sha256:1111"
 
 _PULL = "slan_cuan.python.extract_filter.pull"
-_RUN = "slan_cuan.python.extract_filter.subprocess.run"
+_RUN = "slan_cuan.provenance.subprocess.run"
 _LOAD = "slan_cuan.python.extract_filter.load_build_index"
 
 
@@ -36,115 +32,6 @@ def _make_snapshot(tmp_path: Path, images: list[str]) -> Path:
         json.dumps({"components": [{"containerImage": i} for i in images]})
     )
     return snapshot
-
-
-class TestSnapshotComponentImages:
-    """Tests for snapshot spec parsing."""
-
-    def test_reads_component_images(self, tmp_path: Path) -> None:
-        """Read component images from a snapshot."""
-        snapshot = _make_snapshot(tmp_path, [IMAGE])
-        assert snapshot_component_images(snapshot) == [IMAGE]
-
-    def test_no_components_fails_closed(self, tmp_path: Path) -> None:
-        """Fail closed when the snapshot has no components."""
-        snapshot = tmp_path / "empty.json"
-        snapshot.write_text(json.dumps({"components": []}))
-        with pytest.raises(Exception, match="No component containerImage"):
-            snapshot_component_images(snapshot)
-
-    def test_missing_file_fails_closed(self, tmp_path: Path) -> None:
-        """Fail closed when the snapshot file is missing."""
-        with pytest.raises(Exception, match="Failed to parse snapshot"):
-            snapshot_component_images(tmp_path / "nope.json")
-
-    def test_bad_json_fails_closed(self, tmp_path: Path) -> None:
-        """Fail closed when the snapshot is not valid JSON."""
-        snapshot = tmp_path / "bad.json"
-        snapshot.write_text("{not json")
-        with pytest.raises(Exception, match="Failed to parse snapshot"):
-            snapshot_component_images(snapshot)
-
-
-class TestFetchChainsProvenance:
-    """Tests for the cosign provenance fetch."""
-
-    @patch(_RUN)
-    def test_saves_decoded_payload_named_by_digest(
-        self, mock_run: MagicMock, tmp_path: Path
-    ) -> None:
-        """Save the decoded DSSE payload named by image digest."""
-        predicate = {"builder": {"id": "tekton-chains"}}
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout=_envelope_stdout(predicate), stderr=""
-        )
-        prov_dir = tmp_path / "chains-provenance"
-
-        out = fetch_chains_provenance(IMAGE, prov_dir, "k8s://ns/key")
-
-        assert out == prov_dir / "sha256:1111.json"
-        assert json.loads(out.read_text()) == predicate
-        cmd = mock_run.call_args.args[0]
-        assert cmd[:2] == ["cosign", "verify-attestation"]
-        assert "--insecure-ignore-tlog=true" in cmd
-        assert IMAGE in cmd
-
-    @patch(_RUN)
-    def test_registry_auth_file_sets_docker_config(
-        self, mock_run: MagicMock, tmp_path: Path
-    ) -> None:
-        """Cosign runs with the auth file staged as DOCKER_CONFIG."""
-        # Capture the config content at cosign-invocation time: the
-        # temporary DOCKER_CONFIG dir is removed before the call returns.
-        seen: dict[str, str] = {}
-
-        def fake_run(cmd, **kwargs):
-            config = Path(kwargs["env"]["DOCKER_CONFIG"]) / "config.json"
-            seen["config"] = config.read_text()
-            return MagicMock(returncode=0, stdout=_envelope_stdout({}), stderr="")
-
-        mock_run.side_effect = fake_run
-        auth = tmp_path / "auth.json"
-        auth.write_text('{"auths": {}}')
-
-        fetch_chains_provenance(
-            IMAGE, tmp_path / "prov", "k8s://ns/key", registry_auth_file=auth
-        )
-
-        assert seen["config"] == '{"auths": {}}'
-        # The temporary DOCKER_CONFIG dir is cleaned up afterwards.
-        env_dirs = [
-            Path(c.kwargs["env"]["DOCKER_CONFIG"])
-            for c in mock_run.call_args_list
-        ]
-        assert all(not (d / "config.json").exists() for d in env_dirs)
-
-    @patch(_RUN)
-    def test_cosign_failure_fails_closed(
-        self, mock_run: MagicMock, tmp_path: Path
-    ) -> None:
-        """Fail closed when cosign exits non-zero."""
-        mock_run.return_value = MagicMock(
-            returncode=1, stdout="", stderr="verification failed"
-        )
-        with pytest.raises(Exception, match="cosign verify-attestation failed"):
-            fetch_chains_provenance(IMAGE, tmp_path / "prov", "k8s://ns/key")
-
-    @patch(_RUN)
-    def test_empty_attestation_output_fails_closed(
-        self, mock_run: MagicMock, tmp_path: Path
-    ) -> None:
-        """Fail closed when cosign prints no attestations."""
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        with pytest.raises(Exception, match="no attestations"):
-            fetch_chains_provenance(IMAGE, tmp_path / "prov", "k8s://ns/key")
-
-    def test_undigested_reference_fails_closed(self, tmp_path: Path) -> None:
-        """Fail closed for non-digest-pinned image references."""
-        with pytest.raises(Exception, match="must include a digest"):
-            fetch_chains_provenance(
-                "quay.io/repo/wheels:latest", tmp_path / "prov", "k8s://ns/key"
-            )
 
 
 class TestExtractFilterCommand:
@@ -233,9 +120,7 @@ class TestExtractFilterCommand:
         )
         assert (results_dir / "KEPT_COUNT").read_text() == "2"
         assert (results_dir / "REMOVED_COUNT").read_text() == "1"
-        report = json.loads(
-            (tmp_path / FILTER_REPORT_FILENAME).read_text()
-        )
+        report = json.loads((tmp_path / FILTER_REPORT_FILENAME).read_text())
         assert report["kept_count"] == 2
 
         mock_load.assert_called_once_with(IMAGE, None, verbose=False)
