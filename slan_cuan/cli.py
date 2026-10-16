@@ -49,7 +49,7 @@ def main(
     ca_cert: Path | None,
     tekton_results_dir: Path | None,
 ) -> None:
-    """Release pipeline for Red Hat Lightwell Java artifacts."""
+    """Release tooling for Red Hat Lightwell artifacts (multi-ecosystem)."""
     ctx.obj = GlobalContext(
         verbose=verbose,
         dry_run=dry_run,

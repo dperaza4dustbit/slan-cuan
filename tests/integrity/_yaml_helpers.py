@@ -18,11 +18,18 @@ from slan_cuan.cli import main as cli_main
 
 TEKTON_TASKS_DIR = Path(__file__).resolve().parents[2] / "tekton" / "tasks"
 
-TASK_YAML_FILENAMES = sorted(p.name for p in TEKTON_TASKS_DIR.glob("*.yaml"))
+TASK_YAML_FILENAMES = sorted(
+    p.relative_to(TEKTON_TASKS_DIR).as_posix()
+    for p in TEKTON_TASKS_DIR.rglob("*.yaml")
+)
 
 
 def load_task_yaml(filename: str) -> dict:
-    """Parse one Tekton Task YAML file by filename under tekton/tasks/."""
+    """Parse one Tekton Task YAML file by path under tekton/tasks/.
+
+    ``filename`` may be bare (top level) or contain ecosystem
+    subdirectories, e.g. ``python/slan-cuan-extract-filter.yaml``.
+    """
     return yaml.safe_load((TEKTON_TASKS_DIR / filename).read_text())
 
 

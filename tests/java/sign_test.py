@@ -13,7 +13,7 @@ import pytest
 from click.testing import CliRunner
 
 from slan_cuan.cli import main
-from slan_cuan.maven import (
+from slan_cuan.java.maven import (
     VersionCompareKey,
     apply_signatures,
     ensure_artifact_checksums,
@@ -29,7 +29,7 @@ def _mock_wait_for_internal_request(request: pytest.FixtureRequest):
     if request.node.name.startswith("test_wait_for_internal_request"):
         yield None
         return
-    with patch("slan_cuan.tasks.sign.wait_for_internal_request") as m:
+    with patch("slan_cuan.java.sign.wait_for_internal_request") as m:
         yield m
 
 
@@ -241,7 +241,7 @@ def test_sign_requires_output_path() -> None:
     assert "--output-path" in result.output or "Missing option" in result.output
 
 
-@patch("slan_cuan.tasks.sign.blob_fetch")
+@patch("slan_cuan.java.sign.blob_fetch")
 @patch("internal_request.fetch_results")
 @patch("internal_request.create")
 def test_sign_successful_signing(
@@ -312,7 +312,7 @@ def test_sign_successful_signing(
     assert extract_data["deliverable_dir"] == "signed"
 
 
-@patch("slan_cuan.tasks.sign.blob_fetch")
+@patch("slan_cuan.java.sign.blob_fetch")
 @patch("internal_request.fetch_results")
 @patch("internal_request.create")
 def test_sign_with_repo_zip(
@@ -350,7 +350,7 @@ def test_sign_with_repo_zip(
     assert (app_dir / "my-app-1.0.0.jar.sha256").exists()
 
 
-@patch("slan_cuan.tasks.sign.blob_fetch")
+@patch("slan_cuan.java.sign.blob_fetch")
 @patch("internal_request.fetch_results")
 @patch("internal_request.create")
 def test_sign_no_signed_json_found(
@@ -443,7 +443,7 @@ def test_sign_empty_requester_id_fails(tmp_path: Path) -> None:
     assert "The --requester-id option cannot be empty" in result.output
 
 
-@patch("slan_cuan.tasks.sign.blob_fetch")
+@patch("slan_cuan.java.sign.blob_fetch")
 @patch("internal_request.fetch_results")
 @patch("internal_request.create")
 def test_sign_direct_sign_reads_source_artifact_from_file(
@@ -514,7 +514,7 @@ def test_sign_direct_sign_source_artifact_file_empty_errors(
     assert "is empty" in result.output
 
 
-@patch("slan_cuan.tasks.sign.blob_fetch")
+@patch("slan_cuan.java.sign.blob_fetch")
 @patch("internal_request.fetch_results")
 @patch("internal_request.create")
 def test_sign_direct_sign_forwards_exclude_as_json_string(
@@ -560,7 +560,7 @@ def test_sign_direct_sign_forwards_exclude_as_json_string(
     assert json.loads(params["exclude"]) == [".*\\.md5$", ".*\\.sha1$"]
 
 
-@patch("slan_cuan.tasks.sign.blob_fetch")
+@patch("slan_cuan.java.sign.blob_fetch")
 @patch("internal_request.fetch_results")
 @patch("internal_request.create")
 def test_sign_custom_pipeline_options(
@@ -612,7 +612,7 @@ def test_sign_custom_pipeline_options(
     assert intention_label == "staging"
 
 
-@patch("slan_cuan.tasks.sign.blob_fetch")
+@patch("slan_cuan.java.sign.blob_fetch")
 @patch("internal_request.fetch_results")
 @patch("internal_request.create")
 def test_sign_ignore_patterns_forwarded(
@@ -653,7 +653,7 @@ def test_sign_ignore_patterns_forwarded(
     assert ".*-javadoc" in params["exclude"]
 
 
-@patch("slan_cuan.tasks.sign.blob_fetch")
+@patch("slan_cuan.java.sign.blob_fetch")
 @patch("internal_request.fetch_results")
 @patch("internal_request.create")
 def test_sign_ignore_patterns_from_env_var(
@@ -690,7 +690,7 @@ def test_sign_ignore_patterns_from_env_var(
     assert ".*-javadoc" in params["exclude"]
 
 
-@patch("slan_cuan.tasks.sign.blob_fetch")
+@patch("slan_cuan.java.sign.blob_fetch")
 @patch("internal_request.fetch_results")
 @patch("internal_request.create")
 def test_sign_falls_back_to_extracted_directory(
@@ -759,7 +759,7 @@ def test_sign_rejects_direct_sign_disabled(
     mock_create_ir.assert_not_called()
 
 
-@patch("slan_cuan.tasks.sign.blob_fetch")
+@patch("slan_cuan.java.sign.blob_fetch")
 @patch("internal_request.fetch_results")
 @patch("internal_request.create")
 def test_sign_missing_extract_result_raises(
@@ -799,7 +799,7 @@ def test_sign_missing_extract_result_raises(
     assert "extract result file not found" in result.output
 
 
-@patch("slan_cuan.tasks.sign.blob_fetch")
+@patch("slan_cuan.java.sign.blob_fetch")
 @patch("internal_request.fetch_results")
 @patch("internal_request.create")
 def test_sign_relative_repo_path_copies_siblings(
@@ -1201,7 +1201,7 @@ def test_version_compare_key_hash_eq_contract() -> None:
 @patch("subprocess.run")
 def test_wait_for_internal_request_success(mock_run: Mock) -> None:
     """wait_for_internal_request returns when condition Succeeded is True."""
-    from slan_cuan.tasks.sign import wait_for_internal_request
+    from slan_cuan.java.sign import wait_for_internal_request
 
     mock_run.return_value = Mock(
         returncode=0,
@@ -1227,7 +1227,7 @@ def test_wait_for_internal_request_failed(mock_run: Mock) -> None:
     """wait_for_internal_request raises ClickException on failure condition."""
     import click
 
-    from slan_cuan.tasks.sign import wait_for_internal_request
+    from slan_cuan.java.sign import wait_for_internal_request
 
     mock_run.return_value = Mock(
         returncode=0,
@@ -1257,7 +1257,7 @@ def test_wait_for_internal_request_timeout(mock_run: Mock) -> None:
     """wait_for_internal_request raises ClickException on timeout."""
     import click
 
-    from slan_cuan.tasks.sign import wait_for_internal_request
+    from slan_cuan.java.sign import wait_for_internal_request
 
     mock_run.return_value = Mock(
         returncode=0,
@@ -1292,7 +1292,7 @@ def test_wait_for_internal_request_running_status_false_is_not_failure(
     not be treated as a terminal failure (regression from #112, which raised
     "failed with reason 'Running'" and aborted healthy signing runs).
     """
-    from slan_cuan.tasks.sign import wait_for_internal_request
+    from slan_cuan.java.sign import wait_for_internal_request
 
     running = Mock(
         returncode=0,
@@ -1340,7 +1340,7 @@ def test_wait_for_internal_request_failure_includes_pipeline_run(
     """A failure message surfaces the pipelineRun for direct inspection."""
     import click
 
-    from slan_cuan.tasks.sign import wait_for_internal_request
+    from slan_cuan.java.sign import wait_for_internal_request
 
     mock_run.return_value = Mock(
         returncode=0,
@@ -1378,7 +1378,7 @@ def test_wait_for_internal_request_unparsable_output_keeps_polling(
     the wait; it should be surfaced on the heartbeat cadence rather than
     silently swallowed.
     """
-    from slan_cuan.tasks.sign import wait_for_internal_request
+    from slan_cuan.java.sign import wait_for_internal_request
 
     unparsable = Mock(returncode=0, stdout="not json")
     succeeded = Mock(

@@ -85,8 +85,8 @@ def create_mock_deliverable_zip(output_dir: Path) -> None:
         zf.writestr(f"{ver}/artifact-1.0.0.pom", "<project/>")
 
 
-@patch("slan_cuan.tasks.extract.manifest_fetch")
-@patch("slan_cuan.tasks.extract.pull")
+@patch("slan_cuan.java.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
 def test_extract_successful_extraction(
     mock_pull: Mock,
     mock_manifest_fetch: Mock,
@@ -149,7 +149,7 @@ def test_extract_successful_extraction(
     assert "POM(s)" in result.output
 
 
-@patch("slan_cuan.tasks.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.manifest_fetch")
 def test_extract_dry_run_mode(
     mock_manifest_fetch: Mock,
     fake_manifest: dict,
@@ -190,8 +190,8 @@ def test_extract_dry_run_mode(
     assert "deliverable.name" in result.output
 
 
-@patch("slan_cuan.tasks.extract.manifest_fetch")
-@patch("slan_cuan.tasks.extract.pull")
+@patch("slan_cuan.java.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
 def test_extract_force_overwrite(
     mock_pull: Mock,
     mock_manifest_fetch: Mock,
@@ -228,7 +228,7 @@ def test_extract_force_overwrite(
     assert not (output_dir / "existing.txt").exists()
 
 
-@patch("slan_cuan.tasks.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.manifest_fetch")
 def test_extract_output_dir_conflict(
     mock_manifest_fetch: Mock,
     fake_manifest: dict,
@@ -277,8 +277,8 @@ def test_extract_invalid_image_reference(tmp_path: Path) -> None:
     assert "Error:" in result.output
 
 
-@patch("slan_cuan.tasks.extract.manifest_fetch")
-@patch("slan_cuan.tasks.extract.pull")
+@patch("slan_cuan.java.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
 def test_extract_oras_error_handling(
     mock_pull: Mock,
     mock_manifest_fetch: Mock,
@@ -311,8 +311,8 @@ def test_extract_oras_error_handling(
     assert "Authentication failed" in result.output
 
 
-@patch("slan_cuan.tasks.extract.manifest_fetch")
-@patch("slan_cuan.tasks.extract.pull")
+@patch("slan_cuan.java.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
 def test_extract_with_registry_auth_file(
     mock_pull: Mock,
     mock_manifest_fetch: Mock,
@@ -356,8 +356,8 @@ def test_extract_with_registry_auth_file(
     assert pull_call_kwargs["auth_file"] == auth_file
 
 
-@patch("slan_cuan.tasks.extract.manifest_fetch")
-@patch("slan_cuan.tasks.extract.pull")
+@patch("slan_cuan.java.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
 def test_extract_verbose_mode(
     mock_pull: Mock,
     mock_manifest_fetch: Mock,
@@ -395,7 +395,7 @@ def test_extract_verbose_mode(
     assert "Extracted files" in result.output
 
 
-@patch("slan_cuan.tasks.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.manifest_fetch")
 def test_extract_missing_deliverable_annotation(
     mock_manifest_fetch: Mock,
     tmp_path: Path,
@@ -430,8 +430,8 @@ def test_extract_missing_deliverable_annotation(
     assert "Could not determine deliverable name" in result.output
 
 
-@patch("slan_cuan.tasks.extract.manifest_fetch")
-@patch("slan_cuan.tasks.extract.pull")
+@patch("slan_cuan.java.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
 def test_extract_writes_tekton_results(
     mock_pull: Mock,
     mock_manifest_fetch: Mock,
@@ -479,7 +479,7 @@ def test_extract_writes_tekton_results(
     assert attachment_dir_file.read_text() == "__EMPTY__"
 
 
-@patch("slan_cuan.tasks.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.manifest_fetch")
 def test_extract_dry_run_skips_tekton_results(
     mock_manifest_fetch: Mock,
     fake_manifest: dict,
@@ -511,9 +511,9 @@ def test_extract_dry_run_skips_tekton_results(
     assert not results_dir.exists()
 
 
-@patch("slan_cuan.tasks.extract.discover")
-@patch("slan_cuan.tasks.extract.manifest_fetch")
-@patch("slan_cuan.tasks.extract.pull")
+@patch("slan_cuan.java.extract.discover")
+@patch("slan_cuan.java.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
 def test_extract_with_discover_attachments(
     mock_pull: Mock,
     mock_manifest_fetch: Mock,
@@ -577,9 +577,9 @@ def test_extract_with_discover_attachments(
     assert "Attachments:" in result.output
 
 
-@patch("slan_cuan.tasks.extract.discover")
-@patch("slan_cuan.tasks.extract.manifest_fetch")
-@patch("slan_cuan.tasks.extract.pull")
+@patch("slan_cuan.java.extract.discover")
+@patch("slan_cuan.java.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
 def test_extract_tekton_result_attachment_dir(
     mock_pull: Mock,
     mock_manifest_fetch: Mock,
@@ -624,9 +624,9 @@ def test_extract_tekton_result_attachment_dir(
     assert (results_dir / "ATTACHMENT_DIR").read_text() == "attachments"
 
 
-@patch("slan_cuan.tasks.extract.discover")
-@patch("slan_cuan.tasks.extract.manifest_fetch")
-@patch("slan_cuan.tasks.extract.pull")
+@patch("slan_cuan.java.extract.discover")
+@patch("slan_cuan.java.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
 def test_extract_discover_no_referrers(
     mock_pull: Mock,
     mock_manifest_fetch: Mock,
@@ -669,8 +669,8 @@ def test_extract_discover_no_referrers(
     assert mock_pull.call_count == 1
 
 
-@patch("slan_cuan.tasks.extract.manifest_fetch")
-@patch("slan_cuan.tasks.extract.pull")
+@patch("slan_cuan.java.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
 def test_extract_without_discover_attachments_backward_compat(
     mock_pull: Mock,
     mock_manifest_fetch: Mock,
@@ -687,7 +687,7 @@ def test_extract_without_discover_attachments_backward_compat(
     mock_pull.side_effect = side_effect_pull
 
     runner = CliRunner()
-    with patch("slan_cuan.tasks.extract.discover") as mock_discover:
+    with patch("slan_cuan.java.extract.discover") as mock_discover:
         result = runner.invoke(
             main,
             [
@@ -708,8 +708,8 @@ def test_extract_without_discover_attachments_backward_compat(
     assert result_data["attachment_files"] == []
 
 
-@patch("slan_cuan.tasks.extract.discover")
-@patch("slan_cuan.tasks.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.discover")
+@patch("slan_cuan.java.extract.manifest_fetch")
 def test_extract_dry_run_with_discover_attachments(
     mock_manifest_fetch: Mock,
     mock_discover: Mock,
@@ -745,9 +745,9 @@ def test_extract_dry_run_with_discover_attachments(
     assert "sha256:att1" in result.output
 
 
-@patch("slan_cuan.tasks.extract.discover")
-@patch("slan_cuan.tasks.extract.manifest_fetch")
-@patch("slan_cuan.tasks.extract.pull")
+@patch("slan_cuan.java.extract.discover")
+@patch("slan_cuan.java.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
 def test_extract_discover_multiple_types(
     mock_pull: Mock,
     mock_manifest_fetch: Mock,
@@ -794,9 +794,9 @@ def test_extract_discover_multiple_types(
     assert mock_pull.call_count == 3
 
 
-@patch("slan_cuan.tasks.extract.discover")
-@patch("slan_cuan.tasks.extract.manifest_fetch")
-@patch("slan_cuan.tasks.extract.pull")
+@patch("slan_cuan.java.extract.discover")
+@patch("slan_cuan.java.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
 def test_extract_discover_multiple_referrers_deduplicates(
     mock_pull: Mock,
     mock_manifest_fetch: Mock,
@@ -844,9 +844,9 @@ def test_extract_discover_multiple_referrers_deduplicates(
     assert result.exit_code == 0
 
 
-@patch("slan_cuan.tasks.extract.discover")
-@patch("slan_cuan.tasks.extract.manifest_fetch")
-@patch("slan_cuan.tasks.extract.pull")
+@patch("slan_cuan.java.extract.discover")
+@patch("slan_cuan.java.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
 def test_extract_discover_multiple_referrers_without_pnc_annotations(
     mock_pull: Mock,
     mock_manifest_fetch: Mock,
@@ -906,9 +906,9 @@ def test_extract_discover_multiple_referrers_without_pnc_annotations(
     assert result.exit_code == 0
 
 
-@patch("slan_cuan.tasks.extract.discover")
-@patch("slan_cuan.tasks.extract.manifest_fetch")
-@patch("slan_cuan.tasks.extract.pull")
+@patch("slan_cuan.java.extract.discover")
+@patch("slan_cuan.java.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
 def test_extract_discover_multiple_referrers_distinct_blobs_fails(
     mock_pull: Mock,
     mock_manifest_fetch: Mock,
@@ -992,9 +992,9 @@ def test_extract_discover_multiple_referrers_distinct_blobs_fails(
     assert "found 2 distinct blob sets" in result.output
 
 
-@patch("slan_cuan.tasks.extract.discover")
-@patch("slan_cuan.tasks.extract.manifest_fetch")
-@patch("slan_cuan.tasks.extract.pull")
+@patch("slan_cuan.java.extract.discover")
+@patch("slan_cuan.java.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
 def test_extract_discover_env_var_comma_split(
     mock_pull: Mock,
     mock_manifest_fetch: Mock,
@@ -1032,8 +1032,8 @@ def test_extract_discover_env_var_comma_split(
     assert "type2" in types_called
 
 
-@patch("slan_cuan.tasks.extract.manifest_fetch")
-@patch("slan_cuan.tasks.extract.pull")
+@patch("slan_cuan.java.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
 def test_extract_zip_deliverable(
     mock_pull: Mock,
     mock_manifest_fetch: Mock,
@@ -1085,8 +1085,8 @@ def test_extract_zip_deliverable(
     assert "1 POM(s)" in result.output
 
 
-@patch("slan_cuan.tasks.extract.pull")
-@patch("slan_cuan.tasks.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.pull")
+@patch("slan_cuan.java.extract.manifest_fetch")
 def test_extract_zip_slip_prevention(
     mock_manifest: MagicMock,
     mock_pull: MagicMock,

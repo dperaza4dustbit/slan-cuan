@@ -320,7 +320,7 @@ def test_publish_missing_extract_result(tmp_path: Path) -> None:
     assert "Extract result not found" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_successful_upload(mock_client_cls: Mock, tmp_path: Path) -> None:
     """Mock client, verify upload_content and modify_repository."""
     artifact_dir = create_test_artifact_dir(tmp_path)
@@ -389,7 +389,7 @@ def test_publish_successful_upload(mock_client_cls: Mock, tmp_path: Path) -> Non
     assert len(publish_result["content_unit_hrefs"]) == 6
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_routes_metadata_to_upload_metadata(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -434,7 +434,7 @@ def test_publish_routes_metadata_to_upload_metadata(
     assert "Published: 7 artifact(s) uploaded" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_routes_metadata_checksums(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -531,7 +531,7 @@ def test_publish_env_var_precedence(tmp_path: Path) -> None:
     artifact_dir = create_test_artifact_dir(tmp_path)
 
     runner = CliRunner()
-    with patch("slan_cuan.tasks.publish.PulpMavenClient") as mock_client_cls:
+    with patch("slan_cuan.java.publish.PulpMavenClient") as mock_client_cls:
         mock_client = _make_ctx_mock()
         mock_client_cls.return_value = mock_client
         _setup_client_mock(mock_client)
@@ -557,7 +557,7 @@ def test_publish_env_var_precedence(tmp_path: Path) -> None:
     assert result.exit_code == 0
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_verbose_mode(mock_client_cls: Mock, tmp_path: Path) -> None:
     """With --verbose, shows upload details."""
     artifact_dir = create_test_artifact_dir(tmp_path)
@@ -601,7 +601,7 @@ def test_publish_verbose_mode(mock_client_cls: Mock, tmp_path: Path) -> None:
     assert "Publish result saved:" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_pulp_error_handling(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -641,7 +641,7 @@ def test_publish_pulp_error_handling(
     assert "HTTP status: 400" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_503_is_reported_and_skipped(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -686,7 +686,7 @@ def test_publish_503_is_reported_and_skipped(
     assert "0 artifact(s) uploaded" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_pulp_error_includes_response_body(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -727,7 +727,7 @@ def test_publish_pulp_error_includes_response_body(
     assert "duplicate content unit" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_insecure_mode(mock_client_cls: Mock, tmp_path: Path) -> None:
     """With --insecure, verify_ssl=False is passed to PulpConfig."""
     artifact_dir = create_test_artifact_dir(tmp_path)
@@ -765,7 +765,7 @@ def test_publish_insecure_mode(mock_client_cls: Mock, tmp_path: Path) -> None:
     assert config.verify_ssl is False
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_ca_cert_propagates(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -808,8 +808,8 @@ def test_publish_ca_cert_propagates(
     assert config.verify_ssl is True
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
-@patch("slan_cuan.tasks.publish.BuildOutput.from_extract_result")
+@patch("slan_cuan.java.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.BuildOutput.from_extract_result")
 def test_publish_skips_missing_files(
     mock_from_extract: Mock,
     mock_client_cls: Mock,
@@ -894,7 +894,7 @@ def test_publish_skips_missing_files(
     assert mock_client.upload_content.call_count == 1
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_writes_tekton_results(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -1011,7 +1011,7 @@ def test_publish_default_auth_type() -> None:
     assert "tbr" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_env_var_auth_type(mock_client_cls: Mock, tmp_path: Path) -> None:
     """Auth type via environment variable works."""
     artifact_dir = create_test_artifact_dir(tmp_path)
@@ -1099,7 +1099,7 @@ def test_publish_dry_run_shows_auth_type(tmp_path: Path) -> None:
     assert "Auth type: cert" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_with_domain(mock_client_cls: Mock, tmp_path: Path) -> None:
     """With --pulp-domain, PulpConfig.domain is set."""
     artifact_dir = create_test_artifact_dir(tmp_path)
@@ -1135,7 +1135,7 @@ def test_publish_with_domain(mock_client_cls: Mock, tmp_path: Path) -> None:
     assert config.domain == "lightwell"
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_default_task_timeout(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -1174,7 +1174,7 @@ def test_publish_default_task_timeout(
     assert config.task_timeout == 2700.0
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_with_custom_task_timeout(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -1212,7 +1212,7 @@ def test_publish_with_custom_task_timeout(
     assert config.task_timeout == 3600.0
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_with_task_timeout_envvar(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -1249,7 +1249,7 @@ def test_publish_with_task_timeout_envvar(
     assert config.task_timeout == 2400.0
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_verbose_with_domain(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -1285,8 +1285,8 @@ def test_publish_verbose_with_domain(
     assert "Uploading:" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
-@patch("slan_cuan.tasks.publish.BuildOutput.from_extract_result")
+@patch("slan_cuan.java.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.BuildOutput.from_extract_result")
 def test_publish_skips_missing_with_domain(
     mock_from_extract: Mock,
     mock_client_cls: Mock,
@@ -1556,7 +1556,7 @@ def test_publish_verbose_diagnoses_missing_repo_dir(tmp_path: Path) -> None:
     assert "cyclonedx.json" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_passes_labels_to_upload(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -1598,7 +1598,7 @@ def test_publish_passes_labels_to_upload(
         assert labels["source_image"] == "quay.io/test/image@sha256:abc123"
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_labels_with_none_digest(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -1666,7 +1666,7 @@ def test_publish_labels_with_none_digest(
         assert labels["source_image"] == "quay.io/test/image:latest"
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_labels_in_publish_result(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -1714,7 +1714,7 @@ def test_publish_labels_in_publish_result(
     )
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_shows_labels_in_output(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -1751,7 +1751,7 @@ def test_publish_shows_labels_in_output(
     assert "quay.io/test/image@sha256:abc123" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_writes_pulp_labels_tekton_result(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -1802,7 +1802,7 @@ def test_publish_env_var_pulp_domain(tmp_path: Path) -> None:
     artifact_dir = create_test_artifact_dir(tmp_path)
 
     runner = CliRunner()
-    with patch("slan_cuan.tasks.publish.PulpMavenClient") as mock_client_cls:
+    with patch("slan_cuan.java.publish.PulpMavenClient") as mock_client_cls:
         mock_client = _make_ctx_mock()
         mock_client_cls.return_value = mock_client
         _setup_client_mock(mock_client)
@@ -1847,7 +1847,7 @@ def test_publish_upload_workers_default() -> None:
     assert "4" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_upload_workers_env_var(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -1881,7 +1881,7 @@ def test_publish_upload_workers_env_var(
     assert mock_client.upload_content.call_count == 6
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_upload_workers_one_sequential(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -1919,7 +1919,7 @@ def test_publish_upload_workers_one_sequential(
     mock_client.modify_repository.assert_called_once()
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_concurrent_upload_collects_all_hrefs(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -1985,7 +1985,7 @@ def test_publish_concurrent_upload_collects_all_hrefs(
     assert "Published: 7 artifact(s) uploaded" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_concurrent_upload_error_fails_fast(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -2027,8 +2027,8 @@ def test_publish_concurrent_upload_error_fails_fast(
     mock_client.modify_repository.assert_not_called()
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
-@patch("slan_cuan.tasks.publish.BuildOutput.from_extract_result")
+@patch("slan_cuan.java.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.BuildOutput.from_extract_result")
 def test_publish_concurrent_skips_missing_before_pool(
     mock_from_extract: Mock,
     mock_client_cls: Mock,
@@ -2137,7 +2137,7 @@ def test_publish_dry_run_shows_upload_workers(tmp_path: Path) -> None:
     assert "Upload workers: 8" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_modify_repository_error(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -2179,7 +2179,7 @@ def test_publish_modify_repository_error(
     assert "HTTP status: 409" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_resolve_repository_error(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -2334,8 +2334,8 @@ def test_publish_require_supply_chain_metadata_fails_without_sbom(
     assert "Missing SBOM artifacts for" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpFileClient")
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_require_supply_chain_metadata_passes_with_sbom(
     mock_client_cls: Mock, mock_file_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -2433,8 +2433,8 @@ def test_publish_require_supply_chain_metadata_env_var(tmp_path: Path) -> None:
     assert "Missing SBOM artifacts for" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpFileClient")
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_uploads_security_metadata_to_file_repo(
     mock_maven_cls: Mock,
     mock_file_cls: Mock,
@@ -2495,7 +2495,7 @@ def test_publish_uploads_security_metadata_to_file_repo(
     )
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_skips_file_upload_when_no_security_metadata(
     mock_maven_cls: Mock,
     tmp_path: Path,
@@ -2531,7 +2531,7 @@ def test_publish_skips_file_upload_when_no_security_metadata(
     assert "Security metadata" not in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_requires_file_repo_when_security_metadata_exists(
     mock_maven_cls: Mock,
     tmp_path: Path,
@@ -2569,7 +2569,7 @@ def test_publish_requires_file_repo_when_security_metadata_exists(
     assert "pulp-file-repository" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_whitespace_file_repo_treated_as_absent(
     mock_maven_cls: Mock,
     tmp_path: Path,
@@ -2609,7 +2609,7 @@ def test_publish_whitespace_file_repo_treated_as_absent(
     assert "pulp-file-repository" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_requires_file_repo_when_gav_index_lists_vulnerabilities(
     mock_maven_cls: Mock, tmp_path: Path
 ) -> None:
@@ -2644,8 +2644,8 @@ def test_publish_requires_file_repo_when_gav_index_lists_vulnerabilities(
     mock_maven_cls.assert_not_called()
 
 
-@patch("slan_cuan.tasks.publish.PulpFileClient")
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_preflights_file_repo_before_maven_mutation(
     mock_maven_cls: Mock, mock_file_cls: Mock, tmp_path: Path
 ) -> None:
@@ -2701,7 +2701,7 @@ def test_publish_preflights_file_repo_before_maven_mutation(
     mock_maven.modify_repository.assert_not_called()
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_skips_file_repo_for_clean_gav_index_without_osv_files(
     mock_maven_cls: Mock, tmp_path: Path
 ) -> None:
@@ -2741,7 +2741,7 @@ def test_publish_skips_file_repo_for_clean_gav_index_without_osv_files(
         (json.dumps({"vulns": [None]}), "invalid vulnerability data"),
     ],
 )
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_fails_closed_for_invalid_gav_index(
     mock_maven_cls: Mock,
     tmp_path: Path,
@@ -2776,7 +2776,7 @@ def test_publish_fails_closed_for_invalid_gav_index(
     mock_maven_cls.assert_not_called()
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_fails_closed_when_gav_index_attachment_is_missing(
     mock_maven_cls: Mock, tmp_path: Path
 ) -> None:
@@ -2818,7 +2818,7 @@ def test_gav_index_vulnerabilities_rejects_non_list_attachment_files(
     extract-result.json raised an uncaught ``TypeError`` from iteration
     instead of the ``ValueError`` that ``publish`` catches.
     """
-    from slan_cuan.tasks.publish import _gav_index_vulnerabilities
+    from slan_cuan.java.publish import _gav_index_vulnerabilities
 
     with pytest.raises(
         ValueError, match="Unable to verify the required GAV index attachment"
@@ -2826,7 +2826,7 @@ def test_gav_index_vulnerabilities_rejects_non_list_attachment_files(
         _gav_index_vulnerabilities(None, tmp_path)  # type: ignore[arg-type]
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_fails_closed_when_attachment_files_is_null(
     mock_maven_cls: Mock, tmp_path: Path
 ) -> None:
@@ -2867,7 +2867,7 @@ def test_publish_fails_closed_when_attachment_files_is_null(
     mock_maven_cls.assert_not_called()
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_rejects_arbitrary_security_metadata(
     mock_maven_cls: Mock, tmp_path: Path
 ) -> None:
@@ -2906,7 +2906,7 @@ def test_publish_rejects_arbitrary_security_metadata(
     mock_maven_cls.assert_not_called()
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_rejects_vulnerable_index_without_osv_metadata(
     mock_maven_cls: Mock, tmp_path: Path
 ) -> None:
@@ -2941,7 +2941,7 @@ def test_publish_rejects_vulnerable_index_without_osv_metadata(
     mock_maven_cls.assert_not_called()
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_with_custom_headers_cli(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -2982,7 +2982,7 @@ def test_publish_with_custom_headers_cli(
     }
 
 
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_with_custom_headers_envvar(
     mock_client_cls: Mock, tmp_path: Path
 ) -> None:
@@ -3022,28 +3022,28 @@ def test_publish_with_custom_headers_envvar(
 
 def test_expected_source_for_repo_backport() -> None:
     """Backport repo names map to the pnc-build source."""
-    from slan_cuan.tasks.publish import _expected_source_for_repo
+    from slan_cuan.java.publish import _expected_source_for_repo
 
     assert _expected_source_for_repo("osv-java-backport") == "pnc-build"
 
 
 def test_expected_source_for_repo_novel() -> None:
     """Novel repo names map to the novel-pipeline source."""
-    from slan_cuan.tasks.publish import _expected_source_for_repo
+    from slan_cuan.java.publish import _expected_source_for_repo
 
     assert _expected_source_for_repo("osv-java-novel") == "novel-pipeline"
 
 
 def test_expected_source_for_repo_unrecognized() -> None:
     """Unrecognized repo names return None (routing skipped)."""
-    from slan_cuan.tasks.publish import _expected_source_for_repo
+    from slan_cuan.java.publish import _expected_source_for_repo
 
     assert _expected_source_for_repo("some-other-repo") is None
 
 
 def test_classify_osv_source_reads_source_field(tmp_path: Path) -> None:
     """The authoritative database_specific.lightwell.source field wins."""
-    from slan_cuan.tasks.publish import _classify_osv_source
+    from slan_cuan.java.publish import _classify_osv_source
 
     f = tmp_path / "x_RHLW-CVE-2025-48924-3.17.0.json"
     f.write_text(
@@ -3063,7 +3063,7 @@ def test_classify_osv_source_falls_back_to_id_prefix(tmp_path: Path) -> None:
     Note the id contains "x_RHLW-" whose "LW" must not be mistaken for a
     novel record.
     """
-    from slan_cuan.tasks.publish import _classify_osv_source
+    from slan_cuan.java.publish import _classify_osv_source
 
     f = tmp_path / "x_RHLW-CVE-2025-48924-3.17.0.json"
     f.write_text(json.dumps({"id": "x_RHLW-CVE-2025-48924-3.17.0"}))
@@ -3072,7 +3072,7 @@ def test_classify_osv_source_falls_back_to_id_prefix(tmp_path: Path) -> None:
 
 def test_classify_osv_source_novel_id_prefix(tmp_path: Path) -> None:
     """An LW- id prefix classifies as novel-pipeline."""
-    from slan_cuan.tasks.publish import _classify_osv_source
+    from slan_cuan.java.publish import _classify_osv_source
 
     f = tmp_path / "x_RHLW-LW-2026-0087-4.5.12.json"
     f.write_text(json.dumps({"id": "x_RHLW-LW-2026-0087-4.5.12"}))
@@ -3081,7 +3081,7 @@ def test_classify_osv_source_novel_id_prefix(tmp_path: Path) -> None:
 
 def test_classify_osv_source_unclassifiable(tmp_path: Path) -> None:
     """A record with no recognizable id prefix is unclassifiable."""
-    from slan_cuan.tasks.publish import _classify_osv_source
+    from slan_cuan.java.publish import _classify_osv_source
 
     f = tmp_path / "mystery.json"
     f.write_text(json.dumps({"id": "not-an-osv-id"}))
@@ -3090,7 +3090,7 @@ def test_classify_osv_source_unclassifiable(tmp_path: Path) -> None:
 
 def test_classify_osv_source_non_dict_lightwell_is_none(tmp_path: Path) -> None:
     """A non-dict ``lightwell`` value returns None, not AttributeError."""
-    from slan_cuan.tasks.publish import _classify_osv_source
+    from slan_cuan.java.publish import _classify_osv_source
 
     f = tmp_path / "malformed.json"
     f.write_text(json.dumps({"database_specific": {"lightwell": "oops"}}))
@@ -3132,8 +3132,8 @@ def _run_publish_with_file_repo(artifact_dir: Path, file_repo: str) -> Result:
     )
 
 
-@patch("slan_cuan.tasks.publish.PulpFileClient")
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_novel_repo_skips_cve_records(
     mock_maven_cls: Mock, mock_file_cls: Mock, tmp_path: Path
 ) -> None:
@@ -3164,8 +3164,8 @@ def test_publish_novel_repo_skips_cve_records(
     assert "Security metadata: 1 file(s) uploaded" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpFileClient")
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_backport_repo_skips_novel_records(
     mock_maven_cls: Mock, mock_file_cls: Mock, tmp_path: Path
 ) -> None:
@@ -3194,8 +3194,8 @@ def test_publish_backport_repo_skips_novel_records(
     assert "Warning: skipping OSV record x_RHLW-LW-2026-0087" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpFileClient")
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_unrecognized_repo_uploads_all(
     mock_maven_cls: Mock, mock_file_cls: Mock, tmp_path: Path
 ) -> None:
@@ -3222,8 +3222,8 @@ def test_publish_unrecognized_repo_uploads_all(
     assert "not a recognized" in result.output
 
 
-@patch("slan_cuan.tasks.publish.PulpFileClient")
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_all_records_skipped_no_publication(
     mock_maven_cls: Mock, mock_file_cls: Mock, tmp_path: Path
 ) -> None:
@@ -3249,8 +3249,8 @@ def test_publish_all_records_skipped_no_publication(
     mock_file.update_distribution.assert_not_called()
 
 
-@patch("slan_cuan.tasks.publish.PulpFileClient")
-@patch("slan_cuan.tasks.publish.PulpMavenClient")
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_writes_security_metadata_skipped_tekton_result(
     mock_maven_cls: Mock, mock_file_cls: Mock, tmp_path: Path
 ) -> None:
@@ -3335,7 +3335,7 @@ def _new_format_record(
 
 def test_upstream_record_accepted(tmp_path: Path) -> None:
     """New-format upstream record passes is_osv."""
-    from slan_cuan.tasks.publish import _validate_security_metadata
+    from slan_cuan.java.publish import _validate_security_metadata
 
     sec_dir = tmp_path / "sec"
     sec_dir.mkdir()
@@ -3348,7 +3348,7 @@ def test_upstream_record_accepted(tmp_path: Path) -> None:
 
 def test_coverage_check_uses_upstream(tmp_path: Path) -> None:
     """Vuln coverage check passes when CVEs are in 'upstream' (not 'aliases')."""
-    from slan_cuan.tasks.publish import _validate_security_metadata
+    from slan_cuan.java.publish import _validate_security_metadata
 
     sec_dir = tmp_path / "sec"
     sec_dir.mkdir()
@@ -3361,7 +3361,7 @@ def test_coverage_check_uses_upstream(tmp_path: Path) -> None:
 
 def test_classify_source_new_id(tmp_path: Path) -> None:
     """Advisory records (no source, RHLW- prefix) classified as pnc-build."""
-    from slan_cuan.tasks.publish import _classify_osv_source
+    from slan_cuan.java.publish import _classify_osv_source
 
     rec = _new_format_record()
     path = tmp_path / "RHLW-2026-5fc0229c48c1b99c.json"
@@ -3371,7 +3371,7 @@ def test_classify_source_new_id(tmp_path: Path) -> None:
 
 def test_classify_source_per_cve_record(tmp_path: Path) -> None:
     """Per-CVE records with top-level source still classified correctly."""
-    from slan_cuan.tasks.publish import _classify_osv_source
+    from slan_cuan.java.publish import _classify_osv_source
 
     rec = {
         "id": "x_RHLW-CVE-2024-25710-1.0.0",
@@ -3386,7 +3386,7 @@ def test_classify_source_per_cve_record(tmp_path: Path) -> None:
 
 def test_mixed_old_new_records(tmp_path: Path) -> None:
     """Old and new format records coexist in security metadata dir."""
-    from slan_cuan.tasks.publish import _validate_security_metadata
+    from slan_cuan.java.publish import _validate_security_metadata
 
     sec_dir = tmp_path / "sec"
     sec_dir.mkdir()
@@ -3414,7 +3414,7 @@ def test_mixed_old_new_records(tmp_path: Path) -> None:
 
 def test_coverage_rejects_substring_match(tmp_path: Path) -> None:
     """CVE-2024-2571 must not be covered by a record for CVE-2024-25710."""
-    from slan_cuan.tasks.publish import _validate_security_metadata
+    from slan_cuan.java.publish import _validate_security_metadata
 
     sec_dir = tmp_path / "sec"
     sec_dir.mkdir()
@@ -3433,7 +3433,7 @@ def test_coverage_rejects_substring_match(tmp_path: Path) -> None:
 
 def test_empty_aliases_and_upstream_rejected(tmp_path: Path) -> None:
     """A record with empty aliases and no upstream is not valid OSV."""
-    from slan_cuan.tasks.publish import _validate_security_metadata
+    from slan_cuan.java.publish import _validate_security_metadata
 
     sec_dir = tmp_path / "sec"
     sec_dir.mkdir()
@@ -3453,7 +3453,7 @@ def test_empty_aliases_and_upstream_rejected(tmp_path: Path) -> None:
 
 def test_null_aliases_and_upstream_handled(tmp_path: Path) -> None:
     """Explicit JSON null for aliases/upstream must not TypeError."""
-    from slan_cuan.tasks.publish import _validate_security_metadata
+    from slan_cuan.java.publish import _validate_security_metadata
 
     sec_dir = tmp_path / "sec"
     sec_dir.mkdir()

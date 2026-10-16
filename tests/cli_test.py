@@ -27,7 +27,7 @@ def test_help_lists_extract_subcommand() -> None:
     assert "extract" in result.output
 
 
-@patch("slan_cuan.tasks.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.manifest_fetch")
 def test_env_var_override_for_global_option(
     mock_manifest_fetch: Mock,
 ) -> None:
@@ -67,7 +67,7 @@ def test_env_var_override_for_global_option(
         assert "Parsed image reference:" in result.output
 
 
-@patch("slan_cuan.tasks.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.manifest_fetch")
 def test_env_var_override_for_subcommand_option(
     mock_manifest_fetch: Mock,
 ) -> None:
@@ -105,7 +105,7 @@ def test_env_var_override_for_subcommand_option(
         assert "registry.example.com/image:latest" in result.output
 
 
-@patch("slan_cuan.tasks.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.manifest_fetch")
 def test_cli_flag_overrides_env_var(mock_manifest_fetch: Mock) -> None:
     """CLI flag value takes precedence over env var when both are set."""
     fake_manifest = {
@@ -219,7 +219,7 @@ def test_tekton_results_dir_shown_in_help() -> None:
     assert "--tekton-results-dir" in result.output
 
 
-@patch("slan_cuan.tasks.extract.manifest_fetch")
+@patch("slan_cuan.java.extract.manifest_fetch")
 def test_tekton_results_dir_env_var(mock_manifest_fetch: Mock) -> None:
     """SLAN_CUAN_TEKTON_RESULTS_DIR sets --tekton-results-dir."""
     fake_manifest = {
