@@ -1055,3 +1055,84 @@ def test_override_divergence_warning(
     )
     assert result.exit_code == 0, result.output
     assert "overrides" in result.output
+
+
+# --- Regression tests for reviewer findings ---
+
+
+def test_clean_build_index_produces_no_sbom(
+    ctx: GlobalContext, tmp_path: Path
+) -> None:
+    """A build-index with no vulns must produce zero .bom.json files.
+
+    Regression for finding #1: SBOM generation on clean builds
+    caused publish to raise ValueError.
+    """
+    index_dir = tmp_path / "index"
+    index_dir.mkdir()
+    data = {
+        "buildId": "clean-build",
+        "ecosystem": "maven",
+        "version": {
+            "upstream": "1.0.0",
+            "full": "1.0.0.rhlw-00001",
+            "b": 1,
+            "n": 0,
+        },
+        "primaryPurl": ("pkg:maven/org.example/lib@1.0.0.rhlw-00001"),
+        "purls": ["pkg:maven/org.example/lib@1.0.0.rhlw-00001"],
+        "vulns": [],
+    }
+    (index_dir / "gav-index.json").write_text(json.dumps(data))
+
+    workdir = tmp_path / "workdir"
+    _create_extract_result(workdir)
+    output_dir = workdir / "security_metadata"
+
+    with patch(
+        "slan_cuan.tasks.generate_security_metadata.process_osv",
+        return_value=[],
+    ):
+        runner = CliRunner()
+        result = _invoke(runner, index_dir, output_dir, ctx, workdir=workdir)
+
+    assert result.exit_code == 0, result.output
+    bom_files = list(output_dir.glob("*.bom.json"))
+    assert bom_files == [], f"Clean build must not produce .bom.json: {bom_files}"
+
+
+def test_sidecar_present_populates_hashes(tmp_path: Path) -> None:
+    """When a .sha256 sidecar exists, the SBOM hashes[] is non-empty.
+
+    Regression for finding #2: sidecar path was wrong, hashes
+    were always empty.
+    """
+    from slan_cuan.tasks.generate_security_metadata import (
+        _generate_sbom,
+        _read_sha256_sidecar,
+    )
+
+    repo_dir = tmp_path / "com" / "example" / "lib" / "1.0.0.rhlw-00001"
+    repo_dir.mkdir(parents=True)
+    sidecar = repo_dir / "lib-1.0.0.rhlw-00001.jar.sha256"
+    sidecar.write_text("abcd1234deadbeef  lib-1.0.0.rhlw-00001.jar")
+
+    result = _read_sha256_sidecar(
+        tmp_path,
+        "com/example/lib/1.0.0.rhlw-00001/lib-1.0.0.rhlw-00001.jar",
+    )
+    assert result == "abcd1234deadbeef"
+
+    _, _, sbom = _generate_sbom(
+        group_id="com.example",
+        artifact_id="lib",
+        version="1.0.0.rhlw-00001",
+        base_version="1.0.0",
+        cve_ids=["CVE-2024-0001"],
+        sha256_hash=result,
+        timestamp="2026-01-01T00:00:00Z",
+    )
+    hashes = sbom["components"][0]["hashes"]
+    assert len(hashes) == 1
+    assert hashes[0]["alg"] == "SHA-256"
+    assert hashes[0]["content"] == "abcd1234deadbeef"
