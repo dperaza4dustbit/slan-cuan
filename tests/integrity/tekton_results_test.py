@@ -13,8 +13,8 @@ import pytest
 from slan_cuan.cli import main as cli_main
 from tests.integrity._yaml_helpers import (
     TASK_YAML_FILENAMES,
+    build_context_chain,
     get_run_step,
-    get_subcommand_name,
     load_task_yaml,
     written_tekton_result_names,
 )
@@ -29,15 +29,14 @@ def test_written_results_are_declared_on_the_task(filename: str) -> None:
     """
     task_doc = load_task_yaml(filename)
     run_step = get_run_step(task_doc)
-    subcommand_name = get_subcommand_name(run_step)
-    command = cli_main.commands[subcommand_name]
+    command = build_context_chain(run_step)[-1].command
 
     written = written_tekton_result_names(command)
     declared = {r["name"] for r in task_doc["spec"].get("results", [])}
 
     missing = written - declared
     assert missing == set(), (
-        f"{filename}: '{subcommand_name}' writes Tekton result(s) {missing} "
+        f"{filename}: '{command.name}' writes Tekton result(s) {missing} "
         f"that are not declared in this Task's results: -- Tekton will not "
         f"surface these, silently dropping the data"
     )

@@ -2,42 +2,52 @@
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
-  name: slan-cuan-build-index-filter
+  name: slan-cuan-extract-filter
   labels:
     app.kubernetes.io/version: "0.1"
   annotations:
     tekton.dev/categories: Build
-    tekton.dev/displayName: "slan-cuan: Filter Payload by Build Index"
+    tekton.dev/displayName: "slan-cuan: Extract and Filter Python Release Payload"
     tekton.dev/pipelines.minVersion: "0.50.0"
     tekton.dev/platforms: "linux/amd64"
-    tekton.dev/tags: "release,filtering,build-index"
+    tekton.dev/tags: "release,python,extract,filtering,build-index"
 spec:
   description: >-
-    Filter a payload directory against build-index purls using
-    `slan-cuan build-index-filter`. Discovers the build-index.json OCI
-    referrer on the component image, fails closed if missing or ambiguous,
-    dedupes identical referrers, and moves out-of-scope distribution files
-    (wheels/sdists/sidecars) to a filtered sibling directory.
-    Non-distribution payload content (e.g. the chains-provenance/ metadata
-    consumed by rh-sign-python-wheels for PEP 740 attestations) passes
-    through untouched. Remediated releases keep only distribution
-    artifacts whose coordinates match index purls; validated releases can
-    pass PUBLISH_ALL="true" to keep all artifacts.
+    Extract a Python release payload from the component image and filter
+    it against build-index purls in a single TaskRun, using
+    `slan-cuan python extract-filter`. Reads the component images from
+    the snapshot spec, pulls their distribution files into the payload
+    directory, fetches the Tekton Chains SLSA provenance for each image
+    (rh-sign-python-wheels consumes chains-provenance/ downstream to
+    build PEP 740 attestations), and filters the payload: out-of-scope
+    distribution files (wheels/sdists/sidecars) move to a filtered
+    sibling directory while non-distribution content passes through
+    untouched. Replaces the two-TaskRun extract-py-artifacts +
+    build-index-filter chain; the populate-release-notes step is not
+    ported (advisory creation was replaced by OSV creation and nothing
+    in the release path consumes releaseNotes.content.artifacts).
+
+    Remediated releases keep only distribution artifacts whose
+    coordinates match index purls; validated releases can pass
+    PUBLISH_ALL="true" to keep all artifacts. Release filtering requires
+    exactly one component image; multi-component snapshots fail closed.
 
     Resolved directly by the calunga-push-to-pulp-lightwell managed
     pipeline (release-service-catalog) via its slanCuanGitUrl and
     slanCuanGitRevision params -- the same resolution pattern the java
     release flow uses for the other slan-cuan tasks. The input Trusted
-    Artifact (the extracted payload) is restored under dataDir and the
+    Artifact (the reduced snapshot) is restored under dataDir and the
     filtered payload is published as a new Trusted Artifact. Registry
-    credentials for referrer discovery are mounted from the
-    REGISTRY_AUTH_SECRET Secret.
+    credentials for image pulls, provenance fetches, and referrer
+    discovery are mounted from the REGISTRY_AUTH_SECRET Secret. The
+    pipeline service account must be able to read the Chains public key
+    secret referenced by PROVENANCE_KEY.
   params:
-    - name: IMAGE_REF
-      description: Container image reference (digest-pinned) to discover build-index from.
+    - name: SNAPSHOT_PATH
+      description: Path to the snapshot spec file (relative to dataDir) containing component image information.
       type: string
     - name: PAYLOAD_DIR
-      description: Directory (under dataDir) containing payload files to filter.
+      description: Directory (under dataDir) to extract payload files into and filter.
       type: string
       default: /var/workdir/files
     - name: PUBLISH_ALL
@@ -48,12 +58,16 @@ spec:
       description: K8s Secret name for registry auth (.dockerconfigjson format).
       type: string
       default: "registry-auth"
+    - name: PROVENANCE_KEY
+      description: cosign key reference for verifying Tekton Chains attestations.
+      type: string
+      default: "k8s://openshift-pipelines/public-key"
     - name: dataDir
       description: The location where data will be stored.
       type: string
       default: /var/workdir
     - name: sourceDataArtifact
-      description: Trusted Artifact URI containing the extracted payload files to filter.
+      description: Trusted Artifact URI containing the reduced snapshot spec.
       type: string
     - name: ociStorage
       description: The OCI repository where the Trusted Artifacts are stored.
@@ -90,7 +104,7 @@ spec:
     - name: REMOVED_COUNT
       description: Count of payload files removed to the filtered sibling directory.
     - name: sourceDataArtifact
-      description: Trusted Artifact URI containing the filtered payload directory.
+      description: Trusted Artifact URI containing the extracted and filtered payload directory.
       type: string
   stepTemplate:
     volumeMounts:
@@ -124,20 +138,23 @@ spec:
           value: /mnt/trusted-ca/$(params.caTrustConfigMapKey)
     - name: run
       # Re-pin to an immutable @sha256: digest once the slan-cuan release
-      # containing build-index-filter ships.
+      # containing python extract-filter ships.
       image: quay.io/light-castle/slan-cuan:latest
       imagePullPolicy: Always
       args:
-        - build-index-filter
+        - python
+        - extract-filter
       env:
-        - name: SLAN_CUAN_BUILD_INDEX_FILTER_IMAGE_REF
-          value: $(params.IMAGE_REF)
-        - name: SLAN_CUAN_BUILD_INDEX_FILTER_PAYLOAD_DIR
+        - name: SLAN_CUAN_PYTHON_EXTRACT_FILTER_SNAPSHOT_PATH
+          value: $(params.dataDir)/$(params.SNAPSHOT_PATH)
+        - name: SLAN_CUAN_PYTHON_EXTRACT_FILTER_FILES_DIR
           value: $(params.PAYLOAD_DIR)
-        - name: SLAN_CUAN_BUILD_INDEX_FILTER_PUBLISH_ALL
+        - name: SLAN_CUAN_PYTHON_EXTRACT_FILTER_PUBLISH_ALL
           value: $(params.PUBLISH_ALL)
-        - name: SLAN_CUAN_BUILD_INDEX_FILTER_REGISTRY_AUTH_FILE
+        - name: SLAN_CUAN_PYTHON_EXTRACT_FILTER_REGISTRY_AUTH_FILE
           value: /auth/.dockerconfigjson
+        - name: SLAN_CUAN_PYTHON_EXTRACT_FILTER_PROVENANCE_KEY
+          value: $(params.PROVENANCE_KEY)
         - name: SLAN_CUAN_TEKTON_RESULTS_DIR
           value: /tekton/results
       volumeMounts:
