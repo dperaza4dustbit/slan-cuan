@@ -130,7 +130,8 @@ spec:
         - name: sourceDataArtifact
           value: $(params.sourceDataArtifact)
     - name: closure-update
-      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-utils@sha256:6c037044d1d15c614b0eaf64e2cfd1c65d8bf7da9080bd23c3a2a5a5cabe13d9
+      image: quay.io/light-castle/slan-cuan:latest
+      imagePullPolicy: Always
       volumeMounts:
         - name: service-account-secret
           mountPath: "/etc/service-account-secret"
