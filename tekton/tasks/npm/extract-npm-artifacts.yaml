@@ -51,7 +51,15 @@ spec:
         Chains provenance. Matched against runDetails.metadata.invocationId
         as "<namespace>/..."
       default: "calunga-tenant"
-    - name: taskGitUrl
+    - name: caTrustConfigMapName
+      description: The name of the ConfigMap to read CA bundle data from.
+      type: string
+      default: "trusted-ca"
+    - name: caTrustConfigMapKey
+      description: The name of the key in the ConfigMap that contains the CA bundle data.
+      type: string
+      default: "ca-bundle.crt"
+    - name: catalogGitUrl
       type: string
       description: >-
         The url to the git repo where the release-service-catalog tasks and
@@ -71,6 +79,10 @@ spec:
   volumes:
     - name: workdir
       emptyDir: {}
+    - name: trusted-ca
+      configMap:
+        name: $(params.caTrustConfigMapName)
+        optional: true
   stepTemplate:
     securityContext:
       runAsUser: 1001
@@ -100,6 +112,9 @@ spec:
     volumeMounts:
       - name: workdir
         mountPath: /var/workdir
+      - name: trusted-ca
+        mountPath: /mnt/trusted-ca
+        readOnly: true
   steps:
     - name: use-trusted-artifact
       computeResources:
@@ -122,6 +137,10 @@ spec:
           value: $(params.dataDir)
         - name: sourceDataArtifact
           value: $(params.sourceDataArtifact)
+        - name: orasOptions
+          value: $(params.orasOptions)
+        - name: caCertPath
+          value: /mnt/trusted-ca/$(params.caTrustConfigMapKey)
     - name: extract
       image: quay.io/light-castle/slan-cuan:latest
       imagePullPolicy: Always
@@ -155,3 +174,7 @@ spec:
           value: $(params.dataDir)
         - name: sourceDataArtifact
           value: $(results.sourceDataArtifact.path)
+        - name: orasOptions
+          value: $(params.orasOptions)
+        - name: caCertPath
+          value: /mnt/trusted-ca/$(params.caTrustConfigMapKey)
