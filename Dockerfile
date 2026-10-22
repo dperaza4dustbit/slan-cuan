@@ -65,5 +65,8 @@ ENV SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
 # Embed Tekton Task definitions
 COPY tekton/tasks/ /tekton/tasks/
 
+# npm-to-Pulp release scripts
+COPY scripts/npm/ /usr/local/bin/
+
 # Run the CLI
 ENTRYPOINT ["slan-cuan", "--verbose" ]

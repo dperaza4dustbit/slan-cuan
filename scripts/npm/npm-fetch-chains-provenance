@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Verify and store Tekton Chains SLSA provenance for snapshot images.
+#
+# Env:
+#   FILES_DIR                      Extracted files root (required)
+#   IMAGES_TXT                     File listing digest-pinned images (required)
+#   TRUSTED_PROVENANCE_NAMESPACES  Comma-separated namespaces (default: calunga-tenant)
+#
+# Accepts both:
+#   - SLSA v0.2 PipelineRun attestations (current Konflux Chains default:
+#     builder https://tekton.dev/chains/v2, buildType tekton.dev/v1/PipelineRun)
+#   - SLSA v1 (buildDefinition / runDetails) if the cluster migrates
+#
+# Trusted namespace is matched against (any one):
+#   - SLSA v1 runDetails.metadata.invocationId "<ns>/..."
+#   - PAC log-url containing "/ns/<ns>/"
+#   - Tekton Results annotations results.tekton.dev/{result,record}
+#     starting with "<ns>/" (orchestrator / non-PAC builds)
+#
+set -euo pipefail
+
+FILES_DIR="${FILES_DIR:?FILES_DIR required}"
+IMAGES_TXT="${IMAGES_TXT:?IMAGES_TXT required}"
+TRUSTED_PROVENANCE_NAMESPACES="${TRUSTED_PROVENANCE_NAMESPACES:-calunga-tenant}"
+
+PROVENANCE_DIR="${FILES_DIR}/chains-provenance"
+DOCKER_CONFIG="$(mktemp -d)"
+export DOCKER_CONFIG
+on_exit() {
+  rm -rf "${DOCKER_CONFIG}"
+}
+trap 'on_exit' EXIT
+mkdir -p "${PROVENANCE_DIR}"
+
+TRUSTED_NS_JSON="$(jq -nc --arg s "${TRUSTED_PROVENANCE_NAMESPACES}" '
+  $s
+  | split(",")
+  | map(gsub("^\\s+|\\s+$"; ""))
+  | map(select(length > 0))
+')"
+if [[ "$(jq 'length' <<<"${TRUSTED_NS_JSON}")" -eq 0 ]]; then
+  echo "ERROR: trustedProvenanceNamespaces must list at least one namespace" >&2
+  exit 1
+fi
+
+while read -r IMAGE; do
+  [[ -n "${IMAGE}" ]] || continue
+  echo "Fetching Chains provenance for ${IMAGE}"
+
+  select-oci-auth "${IMAGE}" > "${DOCKER_CONFIG}/config.json"
+
+  DIGEST="${IMAGE##*@}"
+  if [[ ! "${DIGEST}" =~ ^sha256:[a-fA-F0-9]{64}$ ]]; then
+    echo "ERROR: image must be digest-pinned (got ${IMAGE})" >&2
+    exit 1
+  fi
+  DIGEST_SAFE="${DIGEST//[:\/]/_}"
+  PROVENANCE_FILE="${PROVENANCE_DIR}/${DIGEST_SAFE}.json"
+
+  COSIGN_STDERR="/tmp/cosign-stderr-${DIGEST_SAFE}.log"
+  COSIGN_STDOUT="/tmp/cosign-stdout-${DIGEST_SAFE}.jsonl"
+  # Chains uses AWS KMS for signing, not public Sigstore/Rekor,
+  # so transparency log and SCT verification are skipped (same as
+  # extract-py-artifacts). Trust is the cluster Chains key plus
+  # subject digest, Chains builder, npm pipeline, and namespace.
+  # slsaprovenance = SLSA v0.2; slsaprovenance1 = SLSA v1.
+  : > "${COSIGN_STDOUT}"
+  : > "${COSIGN_STDERR}"
+  verified=0
+  for pred_type in slsaprovenance slsaprovenance1; do
+    if cosign verify-attestation \
+      --type="${pred_type}" \
+      --insecure-ignore-tlog=true \
+      --insecure-ignore-sct=true \
+      --key k8s://openshift-pipelines/public-key \
+      "${IMAGE}" >>"${COSIGN_STDOUT}" 2>>"${COSIGN_STDERR}"; then
+      verified=1
+    fi
+  done
+  if [[ "${verified}" -ne 1 ]]; then
+    echo "ERROR: Failed to fetch Chains provenance for ${IMAGE}" >&2
+    cat "${COSIGN_STDERR}" >&2
+    exit 1
+  fi
+  DIGEST_HEX="${DIGEST#sha256:}"
+  if ! jq -s -e \
+    --arg want "${DIGEST_HEX}" \
+    --argjson trustedNs "${TRUSTED_NS_JSON}" '
+    def chains_builder:
+      (.predicate.runDetails.builder.id // .predicate.builder.id // "") as $id
+      | ($id == "https://tekton.dev/chains/v2"
+         or $id == "https://konflux-ci.dev/chains/v2");
+    def slsa_type_ok:
+      (.predicate.buildDefinition.buildType // .predicate.buildType // "") as $bt
+      | ($bt == "https://tekton.dev/chains/v2/slsa"
+         or $bt == "tekton.dev/v1/PipelineRun");
+    def npm_pipeline:
+      (
+        .predicate.buildDefinition.externalParameters.runSpec.pipelineRef.name // ""
+      ) as $v1
+      | (
+        .predicate.invocation.environment.labels["pipelines.openshift.io/runtime"] // ""
+      ) as $rt
+      | ($v1 == "build-npm-compliance" or $v1 == "build-npm"
+         or $v1 == "promote-npm"
+         or $rt == "build-npm-compliance" or $rt == "build-npm"
+         or $rt == "promote-npm");
+    def trusted_ns:
+      (
+        (.predicate.runDetails.metadata.invocationId // "") as $id
+        | any($trustedNs[]; . as $n | ($id | startswith($n + "/")))
+      )
+      or (
+        (.predicate.invocation.environment.annotations["pipelinesascode.tekton.dev/log-url"] // "") as $url
+        | any($trustedNs[]; . as $n | ($url | contains("/ns/" + $n + "/")))
+      )
+      or (
+        (.predicate.invocation.environment.annotations["results.tekton.dev/result"] // "") as $result
+        | any($trustedNs[]; . as $n | ($result | startswith($n + "/")))
+      )
+      or (
+        (.predicate.invocation.environment.annotations["results.tekton.dev/record"] // "") as $record
+        | any($trustedNs[]; . as $n | ($record | startswith($n + "/")))
+      );
+    def subject_ok:
+      any(.subject[]?; (.digest.sha256 // "") == $want);
+    map(try (.payload | @base64d | fromjson) catch empty)
+    | map(select(chains_builder and slsa_type_ok and npm_pipeline and trusted_ns and subject_ok))
+    | .[0] // empty
+    | select(. != null and . != {})
+  ' "${COSIGN_STDOUT}" > "${PROVENANCE_FILE}"; then
+    echo "ERROR: No trusted Chains SLSA provenance for ${DIGEST}" >&2
+    echo "  accepted builders: https://tekton.dev/chains/v2, https://konflux-ci.dev/chains/v2" >&2
+    echo "  accepted buildType: tekton.dev/v1/PipelineRun (SLSA v0.2) or https://tekton.dev/chains/v2/slsa (v1)" >&2
+    echo "  expected npm pipeline: pipelineRef.name or pipelines.openshift.io/runtime in {build-npm-compliance,build-npm} (legacy promote-npm also accepted)" >&2
+    echo "  expected namespace in invocationId, PAC log-url, or Tekton Results annotations: ${TRUSTED_NS_JSON}" >&2
+    cat "${COSIGN_STDERR}" >&2
+    cat "${COSIGN_STDOUT}" >&2
+    exit 1
+  fi
+  echo "  Saved Chains provenance to ${PROVENANCE_FILE}"
+  rm -f "${COSIGN_STDERR}" "${COSIGN_STDOUT}"
+done < "${IMAGES_TXT}"
+
+echo "Chains provenance files:"
+ls -la "${PROVENANCE_DIR}"
