@@ -3536,6 +3536,68 @@ def test_publish_pushes_osv_to_github_alongside_pulp(
 @patch("slan_cuan.java.publish.GitHubOsvClient")
 @patch("slan_cuan.java.publish.PulpFileClient")
 @patch("slan_cuan.java.publish.PulpMavenClient")
+def test_publish_github_in_sync_is_distinguishable_from_unconfigured(
+    mock_maven_cls: Mock,
+    mock_file_cls: Mock,
+    mock_gh_cls: Mock,
+    tmp_path: Path,
+) -> None:
+    """A configured in-sync no-op is distinct from GitHub being unconfigured."""
+    artifact_dir = create_test_artifact_dir(
+        tmp_path, include_security_metadata=True
+    )
+    mock_maven = _make_ctx_mock()
+    mock_maven_cls.return_value = mock_maven
+    _setup_client_mock(mock_maven)
+    mock_file = _make_ctx_mock()
+    mock_file_cls.return_value = mock_file
+    _setup_file_client(mock_file)
+
+    mock_gh = Mock()
+    # Records already match the repo -> no commit.
+    mock_gh.publish.return_value = None
+    mock_gh_cls.return_value = mock_gh
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "publish",
+            "--pulp-url",
+            "https://pulp.example.com",
+            "--pulp-repository",
+            "test-repo",
+            "--artifact-dir",
+            str(artifact_dir),
+            "--pulp-domain",
+            "lightwell",
+            "--pulp-username",
+            "testuser",
+            "--pulp-password",
+            "testpass",
+            "--pulp-file-repository",
+            "test-file-repo",
+            "--github-osv-repo",
+            "project-lightwell/lightwell-osv",
+            "--github-osv-token",
+            "ghp_secret",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    from slan_cuan.models import PublishResult
+
+    publish_result = PublishResult.from_file(artifact_dir / "publish-result.json")
+    # Configured, even though nothing was uploaded this run.
+    assert publish_result.github_osv_configured is True
+    assert publish_result.github_osv_repo == "project-lightwell/lightwell-osv"
+    assert publish_result.github_osv_uploaded == 0
+    assert publish_result.github_osv_commit is None
+
+
+@patch("slan_cuan.java.publish.GitHubOsvClient")
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_skips_github_when_not_configured(
     mock_maven_cls: Mock,
     mock_file_cls: Mock,

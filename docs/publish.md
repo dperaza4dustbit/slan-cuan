@@ -101,7 +101,28 @@ GitHub publication is idempotent: re-publishing records identical to the
 repository's current contents produces no commit. The pushed commit SHA and
 record count are recorded in `publish-result.json`
 (`github_osv_commit`, `github_osv_uploaded`) and exposed as the
-`GITHUB_OSV_COMMIT` and `GITHUB_OSV_UPLOADED` Tekton results.
+`GITHUB_OSV_COMMIT` and `GITHUB_OSV_UPLOADED` Tekton results. A separate
+`github_osv_configured` flag (Tekton result `GITHUB_OSV_CONFIGURED`)
+distinguishes an in-sync no-op (configured, 0 uploaded) from a run where
+GitHub publication was never enabled.
+
+**Concurrency.** Records are written one file per CVE ID, so concurrent
+releases produce net-new, disjoint files. If a competing release pushes first,
+this run's shallow clone becomes stale and its push is rejected
+non-fast-forward; the client then re-clones from fresh HEAD and replays the
+copy/commit/push (it never rebases), with exponential backoff and jitter
+between attempts. After exhausting retries — or on a non-retriable failure such
+as bad credentials or a protected branch — the command fails, which (by design)
+surfaces loudly since the Pulp upload has already succeeded. Git network
+operations are bounded by a per-command timeout.
+
+**Re-publication semantics.** Records with a name already present are
+overwritten (last-writer-wins). For deterministic record generation this never
+changes bytes; if it does, the command logs a warning naming each changed
+record before overwriting it.
+
+The token is supplied to git via a `GIT_ASKPASS` helper and never appears on a
+command line (so it is not exposed through `/proc/<pid>/cmdline`).
 
 ## Authentication
 

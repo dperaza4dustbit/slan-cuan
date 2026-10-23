@@ -173,6 +173,11 @@ spec:
       description: >-
         Number of security metadata files skipped because their OSV record type
         did not match the target Pulp File repository.
+    - name: GITHUB_OSV_CONFIGURED
+      description: >-
+        "true" when GitHub OSV publication was configured for this run, "false"
+        otherwise. Distinguishes an in-sync no-op (configured, 0 uploaded) from
+        a run where GitHub publication was never enabled.
     - name: GITHUB_OSV_UPLOADED
       description: Number of OSV records pushed to the GitHub OSV repository.
     - name: GITHUB_OSV_COMMIT

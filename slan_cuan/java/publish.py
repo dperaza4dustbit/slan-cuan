@@ -1064,7 +1064,8 @@ def publish(
 
         publish_result = replace(
             publish_result,
-            github_osv_repo=github_osv_repo if github_osv_uploaded else None,
+            github_osv_configured=github_osv_enabled,
+            github_osv_repo=github_osv_repo if github_osv_enabled else None,
             github_osv_commit=github_osv_commit,
             github_osv_uploaded=github_osv_uploaded,
         )
@@ -1103,6 +1104,11 @@ def publish(
             ctx.tekton_results_dir,
             "SECURITY_METADATA_SKIPPED",
             str(file_skipped),
+        )
+        write_tekton_result(
+            ctx.tekton_results_dir,
+            "GITHUB_OSV_CONFIGURED",
+            "true" if github_osv_enabled else "false",
         )
         write_tekton_result(
             ctx.tekton_results_dir,
