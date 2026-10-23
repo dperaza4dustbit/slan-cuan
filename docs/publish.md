@@ -111,10 +111,16 @@ releases produce net-new, disjoint files. If a competing release pushes first,
 this run's shallow clone becomes stale and its push is rejected
 non-fast-forward; the client then re-clones from fresh HEAD and replays the
 copy/commit/push (it never rebases), with exponential backoff and jitter
-between attempts. After exhausting retries — or on a non-retriable failure such
-as bad credentials or a protected branch — the command fails, which (by design)
-surfaces loudly since the Pulp upload has already succeeded. Git network
-operations are bounded by a per-command timeout.
+between attempts. Git network operations are bounded by a per-command timeout.
+
+After exhausting retries — or on a non-retriable failure such as bad
+credentials or a protected branch — the command fails the run (non-zero exit)
+rather than letting the pipeline go green on a partial publish. This is safe
+because the whole command is cleanly retriable: Pulp Maven content is
+content-addressed (a re-upload reuses the existing content unit and re-adding it
+to the repository is a no-op), the OSV/VEX File upload is keyed by sha256, and
+the GitHub push is idempotent (in-sync → no commit). Re-running `publish` after
+a GitHub failure therefore converges without duplicating anything.
 
 **Re-publication semantics.** Records with a name already present are
 overwritten (last-writer-wins). For deterministic record generation this never
