@@ -10,6 +10,11 @@ Schema v3 (assess writes initial doc; updater mutates gap lists + level only):
 
 Global index (separate OCI artifact): blocker name@version -> {parents: [...]}.
 
+Pulp labels (tl.compliance_level, tl.compliance_oci_digest) use the OCI digest
+as an optimistic lock: write digest first and re-read; only then write level
+(after another re-read for sticky max). If another digest is present, fail
+closed so the release can be retried. Levels are sticky (never downgraded).
+
 Usage:
   update-npm-closure update --sidecar PATH [--pulp-href HREF]
   update-npm-closure seed [--init-index]
@@ -466,19 +471,189 @@ def set_pulp_label(content_href, key, value):
     pulp_post(url, {"key": key, "value": value})
 
 
+def _level_rank(level):
+    """Rank sticky compliance levels; unknown/empty sorts lowest."""
+    return {"L1": 1, "L2": 2, "L3": 3}.get(level or "", 0)
+
+
+def _monotone_target_level(current_level, desired_level):
+    """Prefer the higher sticky level so concurrent writers never downgrade."""
+    if not desired_level:
+        return current_level or ""
+    if _level_rank(current_level) > _level_rank(desired_level):
+        return current_level
+    return desired_level
+
+
+def _labels_or_exit(content, key, context):
+    """Return pulp_labels from a content row or exit if the unit vanished."""
+    if not content:
+        raise SystemExit(
+            "Pulp label verify failed for %s: content disappeared (%s)" % (key, context)
+        )
+    return content.get("pulp_labels") or {}
+
+
+def _assert_digest_or_race(labels, desired_digest, key):
+    """Require tl.compliance_oci_digest == desired; fail closed on foreign digest."""
+    vdigest = normalize_digest(labels.get(COMPLIANCE_DIGEST_LABEL))
+    if vdigest == desired_digest:
+        return vdigest
+    if vdigest:
+        raise SystemExit(
+            "Pulp label digest race for %s: wanted %s, found %s "
+            "(refusing overwrite; retry the release)"
+            % (key, desired_digest, vdigest)
+        )
+    raise SystemExit(
+        "Pulp label digest race for %s: wanted %s, found empty "
+        "(refusing to continue; retry the release)"
+        % (key, desired_digest)
+    )
+
+
+def _read_pulp_labels(name, version, repo_version_href):
+    """Fetch current compliance labels for name@version, or None if missing.
+
+    Returns:
+        ``(digest, level, labels)`` when the package exists in the repo version.
+        ``None`` when the content unit is not found (caller treats as no-op).
+    """
+    content = find_content_in_repo(name, version, repo_version_href)
+    if not content:
+        return None
+    labels = content.get("pulp_labels") or {}
+    digest = normalize_digest(labels.get(COMPLIANCE_DIGEST_LABEL))
+    level = labels.get(COMPLIANCE_LABEL) or ""
+    return digest, level, labels
+
+
+def _labels_already_satisfied(cur_digest, cur_level, desired_digest, desired_level):
+    """True when digest matches and level is already at least desired (sticky)."""
+    if cur_digest != desired_digest:
+        return False
+    if not desired_level:
+        return True
+    return _level_rank(cur_level) >= _level_rank(desired_level)
+
+
+def _claim_compliance_digest(content_href, repo_version_href, name, version, key, desired_digest):
+    """Write tl.compliance_oci_digest and verify it stuck (optimistic lock claim).
+
+    Raises:
+        SystemExit: another writer holds a different digest, or the unit vanished.
+    """
+    set_pulp_label(content_href, COMPLIANCE_DIGEST_LABEL, desired_digest)
+    eprint(
+        "Updated %s Pulp label %s -> %s" % (key, COMPLIANCE_DIGEST_LABEL, desired_digest)
+    )
+    mid = find_content_in_repo(name, version, repo_version_href)
+    _assert_digest_or_race(
+        _labels_or_exit(mid, key, "after digest write"), desired_digest, key
+    )
+
+
+def _reread_holding_digest(name, version, repo_version_href, key, desired_digest, context):
+    """Re-read labels; require our digest still present (lock still held).
+
+    Returns:
+        Current ``tl.compliance_level`` string (may be empty).
+
+    Raises:
+        SystemExit: content gone, or digest lost to another writer.
+    """
+    content = find_content_in_repo(name, version, repo_version_href)
+    labels = _labels_or_exit(content, key, context)
+    _assert_digest_or_race(labels, desired_digest, key)
+    return labels.get(COMPLIANCE_LABEL) or ""
+
+
+def _maybe_raise_compliance_level(content_href, key, cur_level, desired_level):
+    """Write tl.compliance_level only when sticky target is strictly higher.
+
+    Recomputes target as max(current, desired). Skips the write when a concurrent
+    release already set a higher level (e.g. L3 while we desired L2).
+
+    Returns:
+        The sticky target level that should hold after this step.
+    """
+    target_level = _monotone_target_level(cur_level, desired_level)
+    if _level_rank(cur_level) < _level_rank(target_level):
+        set_pulp_label(content_href, COMPLIANCE_LABEL, target_level)
+        eprint(
+            "Updated %s Pulp label %s -> %s (was %s)"
+            % (key, COMPLIANCE_LABEL, target_level, cur_level or "<unset>")
+        )
+    return target_level
+
+
+def _final_labels_ok(name, version, repo_version_href, key, desired_digest, desired_level):
+    """True when digest is still ours and level is at least desired."""
+    vlevel = _reread_holding_digest(
+        name, version, repo_version_href, key, desired_digest, "final verify"
+    )
+    if not desired_level:
+        return True
+    return _level_rank(vlevel) >= _level_rank(desired_level)
+
+
 def sync_content_pulp_labels(content_href, repo_version_href, name, version, level, compliance_digest):
-    current = find_content_in_repo(name, version, repo_version_href)
-    if not current:
+    """Set Pulp compliance labels using the OCI digest as an optimistic lock.
+
+    Pulp ``set_label`` is not atomic CAS. High-level protocol:
+
+    1. Claim ``tl.compliance_oci_digest`` and verify it stuck.
+    2. Re-read under that digest; raise level only if sticky max needs it.
+    3. Final verify digest + level; retry or fail closed on races.
+
+    Levels are sticky (never written downward). On digest conflict, exit so the
+    release can be retried instead of leaving level/digest skew.
+    """
+    desired_digest = normalize_digest(compliance_digest)
+    if not desired_digest:
         return
-    labels = current.get("pulp_labels") or {}
     key = node_key(name, version)
-    if level and labels.get(COMPLIANCE_LABEL) != level:
-        set_pulp_label(content_href, COMPLIANCE_LABEL, level)
-        eprint("Updated %s Pulp label %s -> %s" % (key, labels.get(COMPLIANCE_LABEL), level))
-    norm_digest = normalize_digest(compliance_digest)
-    if norm_digest and labels.get(COMPLIANCE_DIGEST_LABEL) != norm_digest:
-        set_pulp_label(content_href, COMPLIANCE_DIGEST_LABEL, norm_digest)
-        eprint("Updated %s Pulp label %s -> %s" % (key, COMPLIANCE_DIGEST_LABEL, norm_digest))
+    desired_level = level or ""
+
+    for attempt in range(CAS_MAX_RETRIES):
+        state = _read_pulp_labels(name, version, repo_version_href)
+        if state is None:
+            return
+        cur_digest, cur_level, _labels = state
+
+        if _labels_already_satisfied(cur_digest, cur_level, desired_digest, desired_level):
+            return
+
+        if cur_digest != desired_digest:
+            _claim_compliance_digest(
+                content_href, repo_version_href, name, version, key, desired_digest
+            )
+
+        if not desired_level:
+            return
+
+        cur_level = _reread_holding_digest(
+            name, version, repo_version_href, key, desired_digest, "before level write"
+        )
+        _maybe_raise_compliance_level(content_href, key, cur_level, desired_level)
+
+        if _final_labels_ok(
+            name, version, repo_version_href, key, desired_digest, desired_level
+        ):
+            return
+
+        if attempt + 1 >= CAS_MAX_RETRIES:
+            break
+        eprint(
+            "Pulp label CAS retry %s/%s for %s (level not yet >= %s)"
+            % (attempt + 1, CAS_MAX_RETRIES, key, desired_level)
+        )
+        time.sleep(0.2 * (attempt + 1))
+
+    raise SystemExit(
+        "Pulp label CAS failed for %s after %s retries (wanted digest %s level %s)"
+        % (key, CAS_MAX_RETRIES, desired_digest, desired_level or "<none>")
+    )
 
 
 def list_repo_packages(repo):
