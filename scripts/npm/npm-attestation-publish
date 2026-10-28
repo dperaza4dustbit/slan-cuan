@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# Push a signed npm package attestation (.att) to Quay and set Pulp labels.
+#
+# Public Pulp label contract (client builds {base}@{digest}):
+#   tl.oci_registry_base
+#   tl.attestation_oci_digest
+#   tl.attestation_predicate_type
+#
+# Env:
+#   ATTESTATION_IMAGE_PREFIX   Quay repo for attestation OCI (required)
+#                              falls back to COMPLIANCE_IMAGE_PREFIX
+#   OCI_REGISTRY_BASE          Value for tl.oci_registry_base (default: strip
+#                              tag/digest from ATTESTATION_IMAGE_PREFIX)
+#   ATTESTATION_PREDICATE_TYPE default DEFAULT_ATTESTATION_PREDICATE_TYPE
+#                              (must match cosign --type= at sign time)
+#   ATTESTATION_ARTIFACT_TYPE  oras --artifact-type
+#   ORAS_OPTIONS               Extra oras flags (incl. --registry-config)
+#   PULP_BASE_URL              Required for set_label
+#   AUTH / curl helpers: caller must export AUTH as curl -u args array name
+#                        or set PULP_USER/PULP_PASS and we build AUTH.
+#
+# Usage:
+#   npm-attestation-publish <tgz-path> <content-href> [name] [version]
+#
+# name/version are optional; when omitted they are read from package/package.json.
+set -euo pipefail
+
+_SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+if [[ -f "${_SCRIPT_DIR}/npm-common.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${_SCRIPT_DIR}/npm-common.sh"
+else
+  # shellcheck disable=SC1091
+  source "$(command -v npm-common.sh)"
+fi
+
+TGZ_PATH="${1:?tgz path required}"
+CONTENT_HREF="${2:?content href required}"
+PKG_NAME="${3:-}"
+PKG_VERSION="${4:-}"
+
+ATTESTATION_IMAGE_PREFIX="${ATTESTATION_IMAGE_PREFIX:-${COMPLIANCE_IMAGE_PREFIX:-}}"
+if [[ -z "${ATTESTATION_IMAGE_PREFIX}" ]]; then
+  echo "ERROR: ATTESTATION_IMAGE_PREFIX (or COMPLIANCE_IMAGE_PREFIX) required" >&2
+  exit 1
+fi
+
+ATTESTATION_PREDICATE_TYPE="${ATTESTATION_PREDICATE_TYPE:-${DEFAULT_ATTESTATION_PREDICATE_TYPE}}"
+# Cosign DSSE envelope JSON (not a Sigstore Bundle).
+ATTESTATION_ARTIFACT_TYPE="${ATTESTATION_ARTIFACT_TYPE:-application/vnd.in-toto.dsse+json}"
+CURL_RETRY="${CURL_RETRY:-3}"
+CURL_MAX_TIME_QUERY_SECONDS="${CURL_MAX_TIME_QUERY_SECONDS:-30}"
+MAX_PACKAGE_JSON_BYTES="${MAX_PACKAGE_JSON_BYTES:-1048576}"
+OCI_REGISTRY_BASE_LABEL="tl.oci_registry_base"
+ATTESTATION_DIGEST_LABEL="tl.attestation_oci_digest"
+ATTESTATION_PREDICATE_LABEL="tl.attestation_predicate_type"
+# Per-line pattern (MULTILINE-equivalent). Do not match against the whole
+# multi-line push log with ^...$ — bash ERE anchors apply to the full string.
+ORAS_DIGEST_LINE_RE='^Digest:[[:space:]]*(sha256:[a-f0-9]{64})[[:space:]]*$'
+
+ATT_FILE="${TGZ_PATH}.att"
+if [[ ! -f "${ATT_FILE}" ]]; then
+  echo "ERROR: attestation file missing: ${ATT_FILE}" >&2
+  exit 1
+fi
+
+if [[ -z "${PKG_NAME}" || -z "${PKG_VERSION}" ]]; then
+  if ! assert_tar_member_size "${TGZ_PATH}" "package/package.json" \
+    "${MAX_PACKAGE_JSON_BYTES}"; then
+    echo "ERROR: ${TGZ_PATH} missing or oversized package/package.json" >&2
+    exit 1
+  fi
+  if ! pkg_json="$(tar -xOf "${TGZ_PATH}" package/package.json 2>/dev/null)"; then
+    echo "ERROR: cannot read package/package.json from ${TGZ_PATH}" >&2
+    exit 1
+  fi
+  PKG_NAME="$(jq -r '.name // empty' <<<"${pkg_json}")"
+  PKG_VERSION="$(jq -r '.version // empty' <<<"${pkg_json}")"
+fi
+if [[ -z "${PKG_NAME}" || -z "${PKG_VERSION}" ]]; then
+  echo "ERROR: missing name/version for ${TGZ_PATH}" >&2
+  exit 1
+fi
+
+OCI_REGISTRY_BASE="${OCI_REGISTRY_BASE:-$(normalize_oci_registry_base "${ATTESTATION_IMAGE_PREFIX}")}"
+IMAGE_REF="${OCI_REGISTRY_BASE}:$(attestation_oci_tag "${PKG_NAME}" "${PKG_VERSION}")"
+
+if ! command -v oras >/dev/null 2>&1; then
+  echo "ERROR: oras not found on PATH" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC2086
+oras_cmd=(oras)
+if [[ -n "${ORAS_OPTIONS:-}" ]]; then
+  # Intentionally word-split ORAS_OPTIONS (same pattern as update-npm-closure).
+  # shellcheck disable=SC2206
+  oras_cmd=(oras ${ORAS_OPTIONS})
+fi
+
+ATT_BASENAME="$(basename "${ATT_FILE}")"
+ATT_DIR="$(cd "$(dirname "${ATT_FILE}")" && pwd)"
+echo "Pushing attestation OCI ${IMAGE_REF} (${ATT_BASENAME})"
+push_out="$(
+  cd "${ATT_DIR}"
+  "${oras_cmd[@]}" push "${IMAGE_REF}" \
+    --artifact-type "${ATTESTATION_ARTIFACT_TYPE}" \
+    --annotation "org.opencontainers.image.title=npm-package-attestation" \
+    --annotation "dev.lightwell.npm.name=${PKG_NAME}" \
+    --annotation "dev.lightwell.npm.version=${PKG_VERSION}" \
+    "${ATT_BASENAME}" \
+    2>&1
+)" || {
+  echo "ERROR: oras push failed for ${IMAGE_REF}" >&2
+  echo "${push_out}" >&2
+  exit 1
+}
+echo "${push_out}"
+
+DIGEST=""
+while IFS= read -r line; do
+  if [[ "${line}" =~ ${ORAS_DIGEST_LINE_RE} ]]; then
+    DIGEST="$(normalize_digest "${BASH_REMATCH[1]}")"
+  fi
+done <<< "${push_out}"
+if [[ -z "${DIGEST}" ]]; then
+  resolve_out="$("${oras_cmd[@]}" resolve "${IMAGE_REF}" 2>/dev/null || true)"
+  if [[ "${resolve_out}" == *"@"* ]]; then
+    DIGEST="$(normalize_digest "${resolve_out##*@}")"
+  else
+    DIGEST="$(normalize_digest "${resolve_out}")"
+  fi
+fi
+if [[ -z "${DIGEST}" || "${DIGEST}" != sha256:* ]]; then
+  echo "ERROR: could not resolve attestation OCI digest for ${IMAGE_REF}" >&2
+  exit 1
+fi
+echo "  Attestation digest: ${DIGEST}"
+
+PULP_BASE_URL="${PULP_BASE_URL:?PULP_BASE_URL required}"
+SECRET_DIR="${SECRET_DIR:-/etc/service-account-secret}"
+PULP_USER="$(< "${SECRET_DIR}/username")"
+PULP_PASS="$(< "${SECRET_DIR}/password")"
+AUTH=(-u "${PULP_USER}:${PULP_PASS}")
+
+# One GET for current labels so idempotent reruns skip unchanged POSTs.
+content_json="$(curl --fail-with-body --silent \
+  --retry "${CURL_RETRY}" \
+  --max-time "${CURL_MAX_TIME_QUERY_SECONDS}" \
+  "${AUTH[@]}" \
+  "${PULP_BASE_URL}${CONTENT_HREF}")" || {
+  echo "ERROR: failed to read Pulp content for labels: ${CONTENT_HREF}" >&2
+  exit 1
+}
+label_current() {
+  jq -r --arg k "$1" '.pulp_labels[$k] // empty' <<<"${content_json}"
+}
+
+pulp_set_label "${CONTENT_HREF}" "${OCI_REGISTRY_BASE_LABEL}" \
+  "${OCI_REGISTRY_BASE}" "$(label_current "${OCI_REGISTRY_BASE_LABEL}")"
+pulp_set_label "${CONTENT_HREF}" "${ATTESTATION_DIGEST_LABEL}" \
+  "${DIGEST}" "$(label_current "${ATTESTATION_DIGEST_LABEL}")"
+pulp_set_label "${CONTENT_HREF}" "${ATTESTATION_PREDICATE_LABEL}" \
+  "${ATTESTATION_PREDICATE_TYPE}" "$(label_current "${ATTESTATION_PREDICATE_LABEL}")"
+
+echo "Published attestation for ${PKG_NAME}@${PKG_VERSION} -> ${OCI_REGISTRY_BASE}@${DIGEST}"

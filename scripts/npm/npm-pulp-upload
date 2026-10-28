@@ -16,6 +16,12 @@
 #   PULP_FILE_REPOSITORY Optional file repo for *.tl-compliance.json sidecars
 #   PULP_TASK_TIMEOUT_SECONDS  Max wait for modify tasks (default 300)
 #   PULP_TASK_POLL_SECONDS     Poll interval for modify tasks (default 5)
+#   ATTESTATION_IMAGE_PREFIX / COMPLIANCE_IMAGE_PREFIX
+#                        When set, adjacent *.tgz.att are pushed to Quay and
+#                        Pulp labels tl.oci_registry_base /
+#                        tl.attestation_oci_digest /
+#                        tl.attestation_predicate_type are set (also on skip).
+#   REQUIRE_ATTESTATIONS If true, fail when prefix is set but .att is missing
 #
 # Credentials: ${SECRET_DIR:-/etc/service-account-secret}/{username,password}
 #
@@ -329,21 +335,7 @@ apply_compliance_label() {
   local current="${3:-}"
 
   [[ -n "${level}" ]] || return 0
-  if [[ "${current}" == "${level}" ]]; then
-    echo "  Label ${COMPLIANCE_LABEL_KEY}=${level} already set"
-    return 0
-  fi
-
-  echo "  Setting ${COMPLIANCE_LABEL_KEY}=${level} on ${content_href}"
-  curl --fail-with-body --silent \
-    --retry "${CURL_RETRY}" \
-    --max-time "${CURL_MAX_TIME_QUERY_SECONDS}" \
-    "${AUTH[@]}" \
-    -X POST \
-    -H "Content-Type: application/json" \
-    -d "$(jq -nc --arg k "${COMPLIANCE_LABEL_KEY}" --arg v "${level}" \
-      '{key: $k, value: $v}')" \
-    "${PULP_BASE_URL}${content_href}set_label/"
+  pulp_set_label "${content_href}" "${COMPLIANCE_LABEL_KEY}" "${level}" "${current}"
 }
 
 upload_compliance_sidecar() {
@@ -383,6 +375,29 @@ upload_compliance_sidecar() {
     "${PULP_QUERY_BASE}content/file/files/" \
     && echo "Uploaded compliance sidecar ${sidecar} -> ${relative_path}" \
     || echo "WARNING: could not upload compliance sidecar ${sidecar}"
+}
+
+publish_attestation_if_present() {
+  local file="$1"
+  local content_href="$2"
+  local name="$3"
+  local version="$4"
+  local prefix="${ATTESTATION_IMAGE_PREFIX:-${COMPLIANCE_IMAGE_PREFIX:-}}"
+  local att_file="${file}.att"
+
+  if [[ -z "${prefix}" ]]; then
+    return 0
+  fi
+  if [[ ! -f "${att_file}" ]]; then
+    if [[ "${REQUIRE_ATTESTATIONS:-false}" == "true" ]]; then
+      echo "ERROR: REQUIRE_ATTESTATIONS=true but missing ${att_file}" >&2
+      return 1
+    fi
+    echo "  No ${att_file}; skipping attestation OCI publish"
+    return 0
+  fi
+  ATTESTATION_IMAGE_PREFIX="${prefix}" \
+    npm-attestation-publish "${file}" "${content_href}" "${name}" "${version}"
 }
 
 uploaded=()
@@ -450,6 +465,11 @@ while IFS= read -r -d '' file; do
         continue
       fi
     fi
+    if ! publish_attestation_if_present \
+      "${file}" "${EXISTING_CONTENT_HREF}" "${name}" "${version}"; then
+      failed+=("${file}")
+      continue
+    fi
     skipped_existing+=("${file}")
     upload_compliance_sidecar "${sidecar}" "${name}" "${version}"
     continue
@@ -511,6 +531,11 @@ while IFS= read -r -d '' file; do
     continue
   fi
   echo "Uploaded ${file} -> ${content_href}"
+  if ! publish_attestation_if_present \
+    "${file}" "${content_href}" "${name}" "${version}"; then
+    failed+=("${file}")
+    continue
+  fi
   uploaded+=("${file}")
   # modify/ creates a new repository version; refresh so later
   # existence checks in this run see the upload.

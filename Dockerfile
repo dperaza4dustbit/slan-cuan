@@ -1,3 +1,6 @@
+# Cosign for npm package attestation signing (attest-blob → DSSE .att).
+FROM ghcr.io/sigstore/cosign/cosign:v2.4.1 AS cosign-bin
+
 FROM registry.access.redhat.com/ubi10/ubi:10.2 AS builder
 
 # Install the builder dependencies
@@ -65,6 +68,9 @@ ENV SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
 
 # Embed Tekton Task definitions
 COPY tekton/tasks/ /tekton/tasks/
+
+# Cosign binary for generate-and-sign-npm-attestations
+COPY --from=cosign-bin /ko-app/cosign /usr/local/bin/cosign
 
 # npm-to-Pulp release scripts
 COPY scripts/npm/ /usr/local/bin/

@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# Release-pipeline entrypoint: validate Pulp credentials and upload npm .tgz.
+# Release-pipeline entrypoint: validate Pulp credentials, optionally sign
+# package attestations, and upload npm .tgz (+ attestation OCI / labels).
 # Invoked as a single Tekton step via:
 #   command: ["npm-release-upload"]
 #
 # Env (from task stepTemplate):
 #   FILES_DIR, PULP_*, STATUS_PATH (optional)
+#   ATTESTATION_IMAGE_PREFIX / COMPLIANCE_IMAGE_PREFIX — enable attest path
+#   REQUIRE_ATTESTATIONS — fail if signing material / .att missing
+#   ORAS_OPTIONS — may be extended with --registry-config for Quay
 # Credentials: /etc/service-account-secret/{username,password}
+# Cosign: /etc/cosign-secret (cosign.key or SIGN_KEY + AWS_*)
 #
 set -euo pipefail
 
@@ -26,6 +31,30 @@ for name in username password; do
     fail_with_status "Pulp credential missing or empty: ${path}"
   fi
 done
+
+ATTESTATION_PREFIX="${ATTESTATION_IMAGE_PREFIX:-${COMPLIANCE_IMAGE_PREFIX:-}}"
+if [[ -n "${ATTESTATION_PREFIX}" ]]; then
+  export ATTESTATION_IMAGE_PREFIX="${ATTESTATION_PREFIX}"
+  AUTH_REF="${ATTESTATION_PREFIX}"
+  AUTHFILE="/tmp/quay-auth-attestation.json"
+  select-oci-auth "${AUTH_REF}" > "${AUTHFILE}"
+  registry_opts="--registry-config ${AUTHFILE}"
+  if [[ -n "${ORAS_OPTIONS:-}" ]]; then
+    export ORAS_OPTIONS="${ORAS_OPTIONS} ${registry_opts}"
+  else
+    export ORAS_OPTIONS="${registry_opts}"
+  fi
+
+  echo "Generating npm package attestations (prefix=${ATTESTATION_PREFIX})"
+  generate-and-sign-npm-attestations \
+    || fail_with_status "generate-and-sign-npm-attestations failed"
+else
+  if [[ "${REQUIRE_ATTESTATIONS:-false}" == "true" ]]; then
+    fail_with_status \
+      "REQUIRE_ATTESTATIONS=true but ATTESTATION_IMAGE_PREFIX/COMPLIANCE_IMAGE_PREFIX unset"
+  fi
+  echo "Attestation image prefix unset; skipping sign + attestation OCI publish"
+fi
 
 npm-pulp-upload || fail_with_status "npm-pulp-upload failed"
 
