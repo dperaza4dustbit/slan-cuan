@@ -479,6 +479,43 @@ def _retrieve_uploadable_metadata(
     return uploadable_metadata, skipped_metadata
 
 
+def _select_github_osv_records(
+    security_metadata_files: tuple[Path, ...],
+) -> tuple[Path, ...]:
+    """Select the records to publish to the GitHub OSV repository.
+
+    Built independently of the Pulp-derived set: the GitHub repository is a
+    public OSV feed ingested by osv.dev, so it carries remediated
+    (``pnc-build``) OSV records only. CycloneDX SBOM/VEX documents and
+    ``novel-pipeline`` records are excluded, and an OSV record that cannot
+    be classified fails the run closed rather than being published.
+
+    Raises:
+        ValueError: If any OSV record cannot be classified.
+
+    """
+    selected: list[Path] = []
+    for metadata_file in security_metadata_files:
+        record = safe_json_load(metadata_file, raise_on_err=False)
+        if isinstance(record, dict) and record.get("bomFormat") == "CycloneDX":
+            continue
+        source = _classify_osv_source(metadata_file)
+        if source is None:
+            raise ValueError(
+                f"GitHub OSV: cannot classify the source of "
+                f"{metadata_file.name}; refusing to publish it to the "
+                f"public OSV repository."
+            )
+        if source == "pnc-build":
+            selected.append(metadata_file)
+        else:
+            click.echo(
+                f"GitHub OSV: skipping {metadata_file.name} "
+                f"(source={source}); only pnc-build records are published."
+            )
+    return tuple(selected)
+
+
 def _upload_one(
     client: PulpMavenClient,
     artifact: MavenArtifact,
@@ -848,10 +885,11 @@ def _print_verbose_artifact_info(
     "--github-osv-path",
     envvar="SLAN_CUAN_PUBLISH_GITHUB_OSV_PATH",
     type=str,
-    default="",
+    default="advisories",
+    show_default=True,
     help=(
-        "Directory prefix inside the OSV repository for records "
-        "(default: repository root)."
+        "Directory prefix inside the OSV repository for records; osv.dev "
+        "ingests only this directory. Empty means the repository root."
     ),
 )
 @click.pass_obj
@@ -908,10 +946,18 @@ def publish(
             vulns, security_metadata_files, pulp_file_repository
         )
 
-        if bool(github_osv_repo) != bool(github_osv_token):
+        if github_osv_repo and not github_osv_token:
             raise click.UsageError(
-                "--github-osv-repo and --github-osv-token must be set "
-                "together for GitHub OSV publication."
+                f"GitHub OSV publication to {github_osv_repo} was requested "
+                "but the token is empty (--github-osv-token / "
+                "SLAN_CUAN_PUBLISH_GITHUB_OSV_TOKEN). In Tekton, check that "
+                "the Secret named by GITHUB_OSV_TOKEN_SECRET exists and has "
+                "a 'token' key."
+            )
+        if github_osv_token and not github_osv_repo:
+            raise click.UsageError(
+                "--github-osv-token was provided but --github-osv-repo is "
+                "empty; set both to enable GitHub OSV publication."
             )
         github_osv_enabled = bool(github_osv_repo and github_osv_token)
 
@@ -924,6 +970,30 @@ def publish(
             security_metadata_files, expected_source, pulp_file_repository
         )
         file_skipped = len(skipped_metadata)
+
+        # Validate GitHub OSV publication up front so a misconfiguration fails
+        # before anything is written to Pulp.
+        gh_client: GitHubOsvClient | None = None
+        github_records: tuple[Path, ...] = ()
+        if github_osv_enabled:
+            assert github_osv_repo is not None
+            assert github_osv_token is not None
+            # Fail closed: only the backport stream may feed the public OSV
+            # repository, and repo-name inference must positively identify it.
+            if security_metadata_files and expected_source != "pnc-build":
+                raise click.UsageError(
+                    "GitHub OSV publication requires --pulp-file-repository "
+                    "to be the backport OSV repository; "
+                    f"'{pulp_file_repository}' is not recognized as one."
+                )
+            github_records = _select_github_osv_records(security_metadata_files)
+            gh_client = GitHubOsvClient(
+                github_osv_repo,
+                github_osv_token,
+                branch=github_osv_branch,
+                path=github_osv_path,
+                verbose=ctx.verbose,
+            )
 
         if ctx.dry_run:
             click.echo(f"Distribution: {pulp_repository}")
@@ -944,12 +1014,15 @@ def publish(
                 click.echo(
                     f"Security metadata skipped (wrong type): {file_skipped}"
                 )
-            if github_osv_enabled and uploadable_metadata:
+            if github_records:
                 click.echo(
-                    f"GitHub OSV: would push {len(uploadable_metadata)} "
+                    f"GitHub OSV: would push {len(github_records)} "
                     f"record(s) to {github_osv_repo} "
-                    f"(branch {github_osv_branch})"
+                    f"(branch {github_osv_branch}, "
+                    f"path {github_osv_path or '/'})"
                 )
+                for f in github_records:
+                    click.echo(f"  {f.name}")
             click.echo(
                 f"\ndry-run: would upload "
                 f"{len(build.artifacts)} artifact(s) "
@@ -1029,30 +1102,21 @@ def publish(
 
         github_osv_uploaded = 0
         github_osv_commit: str | None = None
-        if github_osv_enabled and uploadable_metadata:
-            assert github_osv_repo is not None
-            assert github_osv_token is not None
+        if gh_client is not None and github_records:
             commit_message = (
-                f"Publish {len(uploadable_metadata)} OSV record(s) "
+                f"Publish {len(github_records)} OSV record(s) "
                 f"from {extract_result.image}"
             )
             try:
-                gh_client = GitHubOsvClient(
-                    github_osv_repo,
-                    github_osv_token,
-                    branch=github_osv_branch,
-                    path=github_osv_path,
-                    verbose=ctx.verbose,
-                )
                 github_osv_commit = gh_client.publish(
-                    uploadable_metadata, commit_message
+                    github_records, commit_message
                 )
             except GitHubOsvError as e:
                 raise click.ClickException(
                     f"GitHub OSV publication failed: {e.message}\n{e.stderr}"
                 ) from e
             if github_osv_commit is not None:
-                github_osv_uploaded = len(uploadable_metadata)
+                github_osv_uploaded = len(github_records)
                 click.echo(
                     f"GitHub OSV: pushed {github_osv_uploaded} record(s) to "
                     f"{github_osv_repo} @ {github_osv_commit}"

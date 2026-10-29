@@ -103,10 +103,11 @@ spec:
         to Pulp. Leave empty to disable GitHub publication.
       type: string
       default: ""
-    - name: GITHUB_OSV_TOKEN
+    - name: GITHUB_OSV_TOKEN_SECRET
       description: >-
         Name of the Secret holding the GitHub token (key 'token') with write
-        access to GITHUB_OSV_REPO.
+        access to GITHUB_OSV_REPO. This is the Secret's name, not the token
+        itself.
       type: string
       default: ""
     - name: GITHUB_OSV_BRANCH
@@ -115,10 +116,10 @@ spec:
       default: "main"
     - name: GITHUB_OSV_PATH
       description: >-
-        Directory prefix inside the OSV repository for records
-        (default: repository root).
+        Directory prefix inside the OSV repository for records. osv.dev
+        ingests only this directory; empty means the repository root.
       type: string
-      default: ""
+      default: "advisories"
     - name: sourceDataArtifact
       description: Trusted Artifact URI of the extracted artifact directory from slan-cuan-extract.
       type: string
@@ -280,7 +281,7 @@ spec:
         - name: SLAN_CUAN_PUBLISH_GITHUB_OSV_TOKEN
           valueFrom:
             secretKeyRef:
-              name: $(params.GITHUB_OSV_TOKEN)
+              name: $(params.GITHUB_OSV_TOKEN_SECRET)
               key: token
               optional: true
         - name: SLAN_CUAN_PUBLISH_PULP_USERNAME

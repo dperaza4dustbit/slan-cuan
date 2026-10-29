@@ -313,3 +313,19 @@ def test_token_not_passed_as_argument(
 
     assert seen_cmds  # sanity: git actually ran
     assert not any("supersecret" in arg for cmd in seen_cmds for arg in cmd)
+
+
+@pytest.mark.parametrize(
+    "repo", ["lightwell-osv", "owner/name/extra", "owner/", "own er/name", ""]
+)
+def test_rejects_repo_not_in_owner_name_form(repo: str) -> None:
+    """A malformed repository fails fast instead of at clone time."""
+    with pytest.raises(ValueError, match="'owner/name' form"):
+        GitHubOsvClient(repo, "tok")
+
+
+def test_redaction_is_noop_with_empty_token() -> None:
+    """An empty token must not mangle logged commands or stderr."""
+    client = GitHubOsvClient("owner/repo", "")
+    assert client._display(["git", "push", "origin"]) == "git push origin"
+    assert client._redact("fatal: nope") == "fatal: nope"

@@ -3470,32 +3470,15 @@ def test_null_aliases_and_upstream_handled(tmp_path: Path) -> None:
         _validate_security_metadata(files, ("CVE-2024-25710",))
 
 
-@patch("slan_cuan.java.publish.GitHubOsvClient")
-@patch("slan_cuan.java.publish.PulpFileClient")
-@patch("slan_cuan.java.publish.PulpMavenClient")
-def test_publish_pushes_osv_to_github_alongside_pulp(
-    mock_maven_cls: Mock,
-    mock_file_cls: Mock,
-    mock_gh_cls: Mock,
-    tmp_path: Path,
-) -> None:
-    """OSV records are pushed to GitHub in addition to the Pulp File repo."""
-    artifact_dir = create_test_artifact_dir(
-        tmp_path, include_security_metadata=True
-    )
-    mock_maven = _make_ctx_mock()
-    mock_maven_cls.return_value = mock_maven
-    _setup_client_mock(mock_maven)
-    mock_file = _make_ctx_mock()
-    mock_file_cls.return_value = mock_file
-    _setup_file_client(mock_file)
+_GITHUB_OSV_REPO = "project-lightwell/lightwell-osv"
 
-    mock_gh = Mock()
-    mock_gh.publish.return_value = "abc123"
-    mock_gh_cls.return_value = mock_gh
 
+def _run_publish_with_github(
+    artifact_dir: Path, file_repo: str, *github_args: str
+) -> Result:
+    """Invoke publish against a Pulp File repo with GitHub OSV options."""
     runner = CliRunner()
-    result = runner.invoke(
+    return runner.invoke(
         main,
         [
             "publish",
@@ -3512,25 +3495,194 @@ def test_publish_pushes_osv_to_github_alongside_pulp(
             "--pulp-password",
             "testpass",
             "--pulp-file-repository",
-            "test-file-repo",
-            "--github-osv-repo",
-            "project-lightwell/lightwell-osv",
-            "--github-osv-token",
-            "ghp_secret",
+            file_repo,
+            *github_args,
         ],
     )
 
+
+_GITHUB_ENABLED_ARGS = (
+    "--github-osv-repo",
+    _GITHUB_OSV_REPO,
+    "--github-osv-token",
+    "ghp_secret",
+)
+
+
+def _setup_pulp_mocks(mock_maven_cls: Mock, mock_file_cls: Mock) -> Mock:
+    """Wire Maven and File client mocks; return the File client mock."""
+    mock_maven = _make_ctx_mock()
+    mock_maven_cls.return_value = mock_maven
+    _setup_client_mock(mock_maven)
+    mock_file = _make_ctx_mock()
+    mock_file_cls.return_value = mock_file
+    _setup_file_client(mock_file)
+    return mock_file
+
+
+def _add_cyclonedx_sbom(artifact_dir: Path) -> None:
+    """Drop a CycloneDX SBOM next to the OSV records, as generation does."""
+    sec_dir = artifact_dir / "TEST-build-output" / "security_metadata"
+    (sec_dir / "org.example.artifact-1.0.0.bom.json").write_text(
+        json.dumps({"bomFormat": "CycloneDX", "components": []})
+    )
+
+
+@patch("slan_cuan.java.publish.GitHubOsvClient")
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
+def test_publish_pushes_only_backport_osv_records_to_github(
+    mock_maven_cls: Mock,
+    mock_file_cls: Mock,
+    mock_gh_cls: Mock,
+    tmp_path: Path,
+) -> None:
+    """GitHub gets pnc-build OSV records only; CycloneDX stays Pulp-only."""
+    artifact_dir = create_test_artifact_dir(
+        tmp_path,
+        include_security_metadata=True,
+        osv_records=[("CVE-2026-1111", "pnc-build")],
+    )
+    _add_cyclonedx_sbom(artifact_dir)
+    mock_file = _setup_pulp_mocks(mock_maven_cls, mock_file_cls)
+    mock_gh = Mock()
+    mock_gh.publish.return_value = "abc123"
+    mock_gh_cls.return_value = mock_gh
+
+    result = _run_publish_with_github(
+        artifact_dir, "osv-java-backport", *_GITHUB_ENABLED_ARGS
+    )
+
     assert result.exit_code == 0, result.output
-    # Pulp file upload still happened.
-    mock_file.upload_content.assert_called_once()
-    # GitHub push happened with the same record set.
-    mock_gh_cls.assert_called_once()
-    assert mock_gh_cls.call_args.args[0] == "project-lightwell/lightwell-osv"
-    assert mock_gh_cls.call_args.args[1] == "ghp_secret"
-    mock_gh.publish.assert_called_once()
-    pushed_files = mock_gh.publish.call_args.args[0]
-    assert [p.name for p in pushed_files] == ["gav-index.osv.json"]
+    # Pulp still receives both the OSV record and the SBOM.
+    assert mock_file.upload_content.call_count == 2
+    assert mock_gh_cls.call_args.args == (_GITHUB_OSV_REPO, "ghp_secret")
+    assert mock_gh_cls.call_args.kwargs["path"] == "advisories"
+    pushed_files, commit_message = mock_gh.publish.call_args.args
+    assert [p.name for p in pushed_files] == ["x_RHLW-CVE-2026-1111-1.0.0.json"]
+    assert commit_message == (
+        "Publish 1 OSV record(s) from quay.io/test/image@sha256:abc123"
+    )
     assert "GitHub OSV: pushed 1 record(s)" in result.output
+
+
+@patch("slan_cuan.java.publish.GitHubOsvClient")
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
+def test_publish_github_excludes_novel_records(
+    mock_maven_cls: Mock,
+    mock_file_cls: Mock,
+    mock_gh_cls: Mock,
+    tmp_path: Path,
+) -> None:
+    """Novel-pipeline records never reach the GitHub OSV repository."""
+    artifact_dir = create_test_artifact_dir(
+        tmp_path,
+        include_security_metadata=True,
+        osv_records=[
+            ("CVE-2026-2222", "pnc-build"),
+            ("LW-2026-0001", "novel-pipeline"),
+        ],
+    )
+    _setup_pulp_mocks(mock_maven_cls, mock_file_cls)
+    mock_gh = Mock()
+    mock_gh.publish.return_value = "abc123"
+    mock_gh_cls.return_value = mock_gh
+
+    result = _run_publish_with_github(
+        artifact_dir, "osv-java-backport", *_GITHUB_ENABLED_ARGS
+    )
+
+    assert result.exit_code == 0, result.output
+    pushed_files = mock_gh.publish.call_args.args[0]
+    assert [p.name for p in pushed_files] == ["x_RHLW-CVE-2026-2222-1.0.0.json"]
+    assert "GitHub OSV: skipping x_RHLW-LW-2026-0001-1.0.0.json" in result.output
+
+
+@pytest.mark.parametrize("file_repo", ["test-file-repo", "osv-java-novel"])
+@patch("slan_cuan.java.publish.GitHubOsvClient")
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
+def test_publish_github_requires_backport_file_repository(
+    mock_maven_cls: Mock,
+    mock_file_cls: Mock,
+    mock_gh_cls: Mock,
+    file_repo: str,
+    tmp_path: Path,
+) -> None:
+    """A novel or unrecognized file repo fails closed before Pulp upload."""
+    artifact_dir = create_test_artifact_dir(
+        tmp_path,
+        include_security_metadata=True,
+        osv_records=[("CVE-2026-3333", "pnc-build")],
+    )
+    _setup_pulp_mocks(mock_maven_cls, mock_file_cls)
+
+    result = _run_publish_with_github(
+        artifact_dir, file_repo, *_GITHUB_ENABLED_ARGS
+    )
+
+    assert result.exit_code != 0
+    assert "not recognized as one" in result.output
+    mock_maven_cls.assert_not_called()
+    mock_file_cls.assert_not_called()
+    mock_gh_cls.assert_not_called()
+
+
+@patch("slan_cuan.java.publish.GitHubOsvClient")
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
+def test_publish_github_fails_closed_on_unclassifiable_record(
+    mock_maven_cls: Mock,
+    mock_file_cls: Mock,
+    mock_gh_cls: Mock,
+    tmp_path: Path,
+) -> None:
+    """An OSV record with no recognizable source aborts before any upload."""
+    # Default fixture record ("OSV-1") carries no source and no RHLW id.
+    artifact_dir = create_test_artifact_dir(
+        tmp_path, include_security_metadata=True
+    )
+    _setup_pulp_mocks(mock_maven_cls, mock_file_cls)
+
+    result = _run_publish_with_github(
+        artifact_dir, "osv-java-backport", *_GITHUB_ENABLED_ARGS
+    )
+
+    assert result.exit_code != 0
+    assert "cannot classify the source of gav-index.osv.json" in result.output
+    mock_maven_cls.assert_not_called()
+    mock_file_cls.assert_not_called()
+    mock_gh_cls.assert_not_called()
+
+
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
+def test_publish_github_rejects_malformed_repo_before_pulp(
+    mock_maven_cls: Mock,
+    mock_file_cls: Mock,
+    tmp_path: Path,
+) -> None:
+    """A repo not in owner/name form fails before anything is uploaded."""
+    artifact_dir = create_test_artifact_dir(
+        tmp_path,
+        include_security_metadata=True,
+        osv_records=[("CVE-2026-4444", "pnc-build")],
+    )
+    _setup_pulp_mocks(mock_maven_cls, mock_file_cls)
+
+    result = _run_publish_with_github(
+        artifact_dir,
+        "osv-java-backport",
+        "--github-osv-repo",
+        "lightwell-osv",
+        "--github-osv-token",
+        "ghp_secret",
+    )
+
+    assert result.exit_code != 0
+    assert "'owner/name' form" in result.output
+    mock_maven_cls.assert_not_called()
 
 
 @patch("slan_cuan.java.publish.GitHubOsvClient")
@@ -3544,44 +3696,18 @@ def test_publish_github_in_sync_is_distinguishable_from_unconfigured(
 ) -> None:
     """A configured in-sync no-op is distinct from GitHub being unconfigured."""
     artifact_dir = create_test_artifact_dir(
-        tmp_path, include_security_metadata=True
+        tmp_path,
+        include_security_metadata=True,
+        osv_records=[("CVE-2026-5555", "pnc-build")],
     )
-    mock_maven = _make_ctx_mock()
-    mock_maven_cls.return_value = mock_maven
-    _setup_client_mock(mock_maven)
-    mock_file = _make_ctx_mock()
-    mock_file_cls.return_value = mock_file
-    _setup_file_client(mock_file)
-
+    _setup_pulp_mocks(mock_maven_cls, mock_file_cls)
     mock_gh = Mock()
     # Records already match the repo -> no commit.
     mock_gh.publish.return_value = None
     mock_gh_cls.return_value = mock_gh
 
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        [
-            "publish",
-            "--pulp-url",
-            "https://pulp.example.com",
-            "--pulp-repository",
-            "test-repo",
-            "--artifact-dir",
-            str(artifact_dir),
-            "--pulp-domain",
-            "lightwell",
-            "--pulp-username",
-            "testuser",
-            "--pulp-password",
-            "testpass",
-            "--pulp-file-repository",
-            "test-file-repo",
-            "--github-osv-repo",
-            "project-lightwell/lightwell-osv",
-            "--github-osv-token",
-            "ghp_secret",
-        ],
+    result = _run_publish_with_github(
+        artifact_dir, "osv-java-backport", *_GITHUB_ENABLED_ARGS
     )
 
     assert result.exit_code == 0, result.output
@@ -3590,7 +3716,7 @@ def test_publish_github_in_sync_is_distinguishable_from_unconfigured(
     publish_result = PublishResult.from_file(artifact_dir / "publish-result.json")
     # Configured, even though nothing was uploaded this run.
     assert publish_result.github_osv_configured is True
-    assert publish_result.github_osv_repo == "project-lightwell/lightwell-osv"
+    assert publish_result.github_osv_repo == _GITHUB_OSV_REPO
     assert publish_result.github_osv_uploaded == 0
     assert publish_result.github_osv_commit is None
 
@@ -3608,12 +3734,7 @@ def test_publish_skips_github_when_not_configured(
     artifact_dir = create_test_artifact_dir(
         tmp_path, include_security_metadata=True
     )
-    mock_maven = _make_ctx_mock()
-    mock_maven_cls.return_value = mock_maven
-    _setup_client_mock(mock_maven)
-    mock_file = _make_ctx_mock()
-    mock_file_cls.return_value = mock_file
-    _setup_file_client(mock_file)
+    _setup_pulp_mocks(mock_maven_cls, mock_file_cls)
 
     result = _run_publish_with_file_repo(artifact_dir, "test-file-repo")
 
@@ -3622,40 +3743,43 @@ def test_publish_skips_github_when_not_configured(
 
 
 @patch("slan_cuan.java.publish.PulpMavenClient")
-def test_publish_github_repo_without_token_errors(
+def test_publish_github_repo_without_token_points_at_secret(
     mock_maven_cls: Mock, tmp_path: Path
 ) -> None:
-    """--github-osv-repo without a token is a usage error."""
+    """An empty token (e.g. missing Secret) names the Secret param."""
     artifact_dir = create_test_artifact_dir(
         tmp_path, include_security_metadata=True
     )
-    mock_maven = _make_ctx_mock()
-    mock_maven_cls.return_value = mock_maven
-    _setup_client_mock(mock_maven)
 
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        [
-            "publish",
-            "--pulp-url",
-            "https://pulp.example.com",
-            "--pulp-repository",
-            "test-repo",
-            "--artifact-dir",
-            str(artifact_dir),
-            "--pulp-domain",
-            "lightwell",
-            "--pulp-username",
-            "testuser",
-            "--pulp-password",
-            "testpass",
-            "--pulp-file-repository",
-            "test-file-repo",
-            "--github-osv-repo",
-            "project-lightwell/lightwell-osv",
-        ],
+    result = _run_publish_with_github(
+        artifact_dir,
+        "osv-java-backport",
+        "--github-osv-repo",
+        _GITHUB_OSV_REPO,
     )
 
     assert result.exit_code != 0
-    assert "must be set together" in result.output
+    assert "token is empty" in result.output
+    assert "GITHUB_OSV_TOKEN_SECRET" in result.output
+    mock_maven_cls.assert_not_called()
+
+
+@patch("slan_cuan.java.publish.PulpMavenClient")
+def test_publish_github_token_without_repo_errors(
+    mock_maven_cls: Mock, tmp_path: Path
+) -> None:
+    """A token with no repository is a usage error."""
+    artifact_dir = create_test_artifact_dir(
+        tmp_path, include_security_metadata=True
+    )
+
+    result = _run_publish_with_github(
+        artifact_dir,
+        "osv-java-backport",
+        "--github-osv-token",
+        "ghp_secret",
+    )
+
+    assert result.exit_code != 0
+    assert "--github-osv-repo is" in result.output
+    mock_maven_cls.assert_not_called()

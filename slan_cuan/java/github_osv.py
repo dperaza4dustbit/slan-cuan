@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import random
+import re
 import shutil
 import stat
 import subprocess
@@ -43,6 +44,9 @@ _GIT_USERNAME = "x-access-token"
 _DEFAULT_TIMEOUT = 300
 _DEFAULT_MAX_ATTEMPTS = 3
 _DEFAULT_RETRY_BASE_DELAY = 1.0
+
+# ``owner/name`` as accepted by GitHub (no extra path segments or spaces).
+_REPO_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
 # Env var used to hand the token to the GIT_ASKPASS helper out of band.
 _ASKPASS_TOKEN_ENV = "SLAN_CUAN_OSV_GIT_TOKEN"
@@ -116,8 +120,16 @@ class GitHubOsvClient:
             retry_base_delay: Base delay (seconds) for exponential backoff
                 between retry attempts.
 
+        Raises:
+            ValueError: If ``repo`` is not in ``owner/name`` form.
+
         """
         self.repo = repo.strip().strip("/")
+        if not _REPO_PATTERN.fullmatch(self.repo):
+            raise ValueError(
+                f"GitHub OSV repository must be in 'owner/name' form, got "
+                f"{repo!r}"
+            )
         self._token = token
         self.branch = branch
         self.path = path.strip().strip("/")
@@ -137,9 +149,13 @@ class GitHubOsvClient:
         """
         return f"https://{_GIT_USERNAME}@{_GITHUB_HOST}/{self.repo}.git"
 
+    def _redact(self, text: str) -> str:
+        """Replace the token in ``text`` with ``***`` (no-op without one)."""
+        return text.replace(self._token, "***") if self._token else text
+
     def _display(self, cmd: Sequence[str]) -> str:
         """Render a command for logs/errors, defensively redacting the token."""
-        return " ".join(cmd).replace(self._token, "***")
+        return self._redact(" ".join(cmd))
 
     def _run(
         self,
@@ -169,7 +185,7 @@ class GitHubOsvClient:
                 -1,
             ) from e
         if result.returncode != 0:
-            stderr = result.stderr.strip().replace(self._token, "***")
+            stderr = self._redact(result.stderr.strip())
             raise GitHubOsvError(
                 f"git command failed: {self._display(cmd)}",
                 stderr,

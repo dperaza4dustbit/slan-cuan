@@ -54,7 +54,7 @@ Labels are also:
 | `--github-osv-repo` | string | No | -- | GitHub repo (`owner/name`) to also publish OSV records to |
 | `--github-osv-token` | string | With `--github-osv-repo` | -- | Token with write access to the OSV repo |
 | `--github-osv-branch` | string | No | `main` | Branch to commit records onto |
-| `--github-osv-path` | string | No | repo root | Directory prefix inside the OSV repo |
+| `--github-osv-path` | string | No | `advisories` | Directory prefix inside the OSV repo (osv.dev ingests only this directory; empty means repo root) |
 
 The `--insecure` flag is intended for development only. In production, use the global `--ca-cert` option for custom certificate authorities.
 
@@ -91,11 +91,27 @@ Generated OSV/VEX records are published to two destinations:
   (`osv-java-backport`/`osv-java-novel`); see the routing note in
   `slan_cuan/publish.py`.
 - **GitHub repository** (`--github-osv-repo`, optional) — when set together
-  with `--github-osv-token`, the same filtered record set is committed and
-  pushed to the OSV git repository (e.g.
-  `project-lightwell/lightwell-osv`) as a single commit. This runs
-  **in addition to** the Pulp upload; leaving `--github-osv-repo` unset
-  disables it and preserves Pulp-only behavior.
+  with `--github-osv-token`, records are committed and pushed to the OSV git
+  repository (e.g. `project-lightwell/lightwell-osv`) under
+  `--github-osv-path` as a single commit. This runs **in addition to** the
+  Pulp upload; leaving `--github-osv-repo` unset disables it and preserves
+  Pulp-only behavior.
+
+The GitHub repository is a public feed ingested by osv.dev, so its record set
+is selected independently of the Pulp routing and fails closed:
+
+- Only OSV records whose source is `pnc-build` (remediated backports) are
+  pushed. CycloneDX SBOM/VEX documents and `novel-pipeline` records are never
+  pushed.
+- An OSV record whose source cannot be classified fails the run.
+- When security metadata is present, `--pulp-file-repository` must be
+  recognized as the backport repository; a novel or unrecognized repository
+  name fails the run.
+
+These checks run before anything is uploaded to Pulp. In Tekton, the token
+comes from the Secret named by the `GITHUB_OSV_TOKEN_SECRET` param (key
+`token`); a missing Secret or key surfaces as an empty-token error naming that
+param.
 
 GitHub publication is idempotent: re-publishing records identical to the
 repository's current contents produces no commit. The pushed commit SHA and
