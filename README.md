@@ -1,6 +1,6 @@
 # slan-cuan
 
-Release tooling for Red Hat Lightwell artifacts, shared across language ecosystems. For Java it extracts artifacts from PNC container images, signs them, registers SBOMs and attestations, and publishes to Pulp for distribution via `packages.redhat.com`. For Python it extracts wheels from component images, fetches Tekton Chains provenance, and filters release payloads against build-index purls. Other ecosystems (npm, ...) are expected to land as additional modules.
+Release tooling for Red Hat Lightwell artifacts, shared across language ecosystems. For Java it extracts artifacts from PNC container images, signs them, registers SBOMs and attestations, and publishes to Pulp for distribution via `packages.redhat.com`. For Python it extracts wheels from component images, fetches Tekton Chains provenance, and filters release payloads against build-index purls. Other ecosystems (javascript, ...) are expected to land as additional modules.
 
 Packaged as a single container image that provides the Python CLI application (one entrypoint, ecosystem-specific subcommands) and Tekton Task definitions for Konflux pipeline orchestration.
 

@@ -53,3 +53,11 @@ Subcommand-specific variables are documented in each subcommand's reference page
 | [publish](publish.md) | Publish | Upload Maven artifacts to Pulp |
 | [sign](sign.md) | Sign | Cryptographically sign Maven artifacts on RADAS |
 | [register](register.md) | Register | Upload SBOMs to Trustify for vulnerability cross-referencing |
+
+Ecosystem-specific commands are grouped under their own namespace instead of the top-level table above, e.g. `slan-cuan javascript <command>`.
+
+### `javascript` subcommands
+
+| Subcommand | Tekton Task | Description |
+|------------|-------------|-------------|
+| `javascript extract` | Yes | Extract npm packages from the snapshot's component images |

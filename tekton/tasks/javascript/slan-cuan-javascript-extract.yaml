@@ -1,0 +1,209 @@
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: slan-cuan-javascript-extract
+  labels:
+    app.kubernetes.io/version: "0.1"
+  annotations:
+    tekton.dev/categories: Build
+    tekton.dev/displayName: "slan-cuan: Extract JavaScript Release Payload"
+    tekton.dev/pipelines.minVersion: "0.50.0"
+    tekton.dev/platforms: "linux/amd64"
+    tekton.dev/tags: "release,javascript,extract,provenance"
+spec:
+  description: >-
+    Extract an npm release payload from the snapshot's component images
+    using `slan-cuan javascript extract`. Reads the component images from the
+    snapshot spec, pulls each digest-pinned image's distribution files
+    with oras into a digest-namespaced directory under filesDir, and
+    fetches/verifies the Tekton Chains SLSA provenance for each image
+    (hard-fails if missing, unverifiable, or not trusted). Provenance
+    must match the image digest and come from Konflux Chains with
+    pipelineRef.name build-npm or build-npm-compliance (legacy
+    promote-npm also accepted) and an invocationId in a trusted tenant
+    namespace (default calunga-tenant). Replaces the bash-script-based
+    extract-npm-artifacts Task; the populate-release-notes step is not
+    ported (advisory creation was replaced by OSV creation and nothing
+    in the release path consumes releaseNotes.content.artifacts).
+
+    Resolved directly by the calunga-push-to-pulp-lightwell managed
+    pipeline (release-service-catalog) via its slanCuanGitUrl and
+    slanCuanGitRevision params -- the same resolution pattern the java
+    and python release flows use for the other slan-cuan tasks. The
+    input Trusted Artifact (the reduced snapshot) is restored under
+    dataDir and the extracted payload is published as a new Trusted
+    Artifact. Registry credentials for image pulls and provenance
+    fetches are mounted from the REGISTRY_AUTH_SECRET Secret. The
+    pipeline service account must be able to read the Chains public key
+    secret referenced by PROVENANCE_KEY.
+  params:
+    - name: SNAPSHOT_PATH
+      description: Path to the snapshot spec file (relative to dataDir) containing component image information.
+      type: string
+    - name: sourceDataArtifact
+      description: Trusted Artifact URI containing the reduced snapshot spec.
+      type: string
+    - name: dataDir
+      description: The location where data will be stored.
+      type: string
+      default: /var/workdir/content
+    - name: filesDir
+      description: The relative path within dataDir where files will be extracted.
+      type: string
+      default: files
+    - name: ociStorage
+      description: The OCI repository where the Trusted Artifacts are stored.
+      type: string
+    - name: ociArtifactExpiresAfter
+      description: Expiration date for the trusted artifact in the OCI repository.
+      type: string
+      default: "1d"
+    - name: orasOptions
+      description: oras options to pass to Trusted Artifacts calls.
+      type: string
+      default: ""
+    - name: trustedArtifactsDebug
+      description: Flag to enable debug logging in trusted artifacts. Set to a non-empty string to enable.
+      type: string
+      default: ""
+    - name: trustedProvenanceNamespaces
+      description: >
+        Comma-separated Kubernetes namespaces allowed to produce
+        accepted Chains provenance. Matched against
+        runDetails.metadata.invocationId as "<namespace>/...".
+      type: string
+      default: "calunga-tenant"
+    - name: REGISTRY_AUTH_SECRET
+      description: K8s Secret name for registry auth (.dockerconfigjson format).
+      type: string
+      default: "registry-auth"
+    - name: PROVENANCE_KEY
+      description: cosign key reference for verifying Tekton Chains attestations.
+      type: string
+      default: "k8s://openshift-pipelines/public-key"
+    - name: caTrustConfigMapName
+      description: The name of the ConfigMap to read CA bundle data from.
+      type: string
+      default: "trusted-ca"
+    - name: caTrustConfigMapKey
+      description: The name of the key in the ConfigMap that contains the CA bundle data.
+      type: string
+      default: "ca-bundle.crt"
+    - name: catalogGitUrl
+      description: >-
+        The url to the git repo where the release-service-catalog stepactions are stored.
+      type: string
+      default: https://github.com/konflux-lightwell/release-service-catalog.git
+    - name: catalogGitRevision
+      description: The revision in the catalogGitUrl repo to be used.
+      type: string
+      default: main
+  results:
+    - name: sourceDataArtifact
+      description: Trusted Artifact URI containing the extracted payload directory.
+      type: string
+  stepTemplate:
+    volumeMounts:
+      - mountPath: /var/workdir
+        name: workdir
+      - name: trusted-ca
+        mountPath: /mnt/trusted-ca
+        readOnly: true
+    securityContext:
+      runAsNonRoot: true
+      readOnlyRootFilesystem: false
+  steps:
+    - name: use-trusted-artifact
+      computeResources:
+        limits:
+          memory: 64Mi
+        requests:
+          memory: 64Mi
+          cpu: 10m
+      ref:
+        resolver: git
+        params:
+          - name: url
+            value: $(params.catalogGitUrl)
+          - name: revision
+            value: $(params.catalogGitRevision)
+          - name: pathInRepo
+            value: stepactions/use-trusted-artifact/use-trusted-artifact.yaml
+      params:
+        - name: workDir
+          value: $(params.dataDir)
+        - name: sourceDataArtifact
+          value: $(params.sourceDataArtifact)
+        - name: orasOptions
+          value: $(params.orasOptions)
+        - name: caCertPath
+          value: /mnt/trusted-ca/$(params.caTrustConfigMapKey)
+    - name: extract
+      # Re-pin to an immutable @sha256: digest once the slan-cuan release
+      # containing javascript extract ships.
+      image: quay.io/light-castle/slan-cuan:latest
+      imagePullPolicy: Always
+      computeResources:
+        limits:
+          memory: 256Mi
+        requests:
+          memory: 256Mi
+          cpu: 100m
+      args:
+        - javascript
+        - extract
+      env:
+        - name: SLAN_CUAN_JAVASCRIPT_EXTRACT_SNAPSHOT_PATH
+          value: $(params.dataDir)/$(params.SNAPSHOT_PATH)
+        - name: SLAN_CUAN_JAVASCRIPT_EXTRACT_FILES_DIR
+          value: $(params.dataDir)/$(params.filesDir)
+        - name: SLAN_CUAN_JAVASCRIPT_EXTRACT_TRUSTED_PROVENANCE_NAMESPACES
+          value: $(params.trustedProvenanceNamespaces)
+        - name: SLAN_CUAN_JAVASCRIPT_EXTRACT_REGISTRY_AUTH_FILE
+          value: /auth/.dockerconfigjson
+        - name: SLAN_CUAN_JAVASCRIPT_EXTRACT_PROVENANCE_KEY
+          value: $(params.PROVENANCE_KEY)
+        - name: SLAN_CUAN_TEKTON_RESULTS_DIR
+          value: /tekton/results
+      volumeMounts:
+        - name: registry-auth
+          mountPath: /auth
+          readOnly: true
+    - name: create-trusted-artifact
+      computeResources:
+        limits:
+          memory: 128Mi
+        requests:
+          memory: 128Mi
+          cpu: 250m
+      ref:
+        resolver: git
+        params:
+          - name: url
+            value: $(params.catalogGitUrl)
+          - name: revision
+            value: $(params.catalogGitRevision)
+          - name: pathInRepo
+            value: stepactions/create-trusted-artifact/create-trusted-artifact.yaml
+      params:
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: workDir
+          value: $(params.dataDir)
+        - name: sourceDataArtifact
+          value: $(results.sourceDataArtifact.path)
+        - name: orasOptions
+          value: $(params.orasOptions)
+        - name: caCertPath
+          value: /mnt/trusted-ca/$(params.caTrustConfigMapKey)
+  volumes:
+    - name: workdir
+      emptyDir: {}
+    - name: registry-auth
+      secret:
+        secretName: $(params.REGISTRY_AUTH_SECRET)
+    - name: trusted-ca
+      configMap:
+        name: $(params.caTrustConfigMapName)
+        optional: true
