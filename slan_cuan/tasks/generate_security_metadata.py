@@ -1010,16 +1010,24 @@ def _build_osidb_client(
     osidb_kerberos_principal: str,
     *,
     verbose: bool = False,
-) -> OsidbClient | None:
-    """Build an OSIDB client, or None when no keytab is available.
+) -> OsidbClient:
+    """Build an OSIDB client; fails closed when the keytab is unusable.
 
     Unlike the per-index command, this does not gate on the presence of
     vulnerabilities in an index: the snapshot command builds the client
-    once, up front, before any index has been read.
+    once, up front, before any index has been read. OSIDB enrichment is
+    mandatory for this flow, so a missing or unreadable keytab aborts the
+    run instead of silently producing un-enriched OSV records.
     """
-    if not (osidb_keytab and Path(osidb_keytab).is_file()):
-        click.echo("No OSIDB keytab file found, skipping OSIDB fetching.")
-        return None
+    if (
+        not osidb_keytab
+        or not Path(osidb_keytab).is_file()
+        or not os.access(osidb_keytab, os.R_OK)
+    ):
+        raise click.ClickException(
+            f"OSIDB keytab {osidb_keytab!r} is missing or not readable; "
+            "refusing to generate OSV metadata without OSIDB enrichment."
+        )
 
     # Lazy import: fath_cuan.osidb only exists in newer fath-cuan and is
     # only needed when a keytab is supplied.
@@ -1049,7 +1057,7 @@ def _build_osidb_client(
 def _generate_osv_for_index(
     index_full_path: Path,
     output_dir: Path,
-    osidb_client: OsidbClient | None,
+    osidb_client: OsidbClient,
 ) -> int:
     """Generate OSV records for a single build index; return the count.
 
