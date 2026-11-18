@@ -36,6 +36,15 @@ FILE_DISTRIBUTION_API_PATH_TEMPLATE: str = (
     "/api/pulp/{domain}/api/v3/distributions/file/file/"
 )
 
+# Pulp npm plugin API URL path templates
+NPM_REPO_API_PATH_TEMPLATE: str = (
+    "/api/pulp/{domain}/api/v3/repositories/npm/npm/"
+)
+NPM_CONTENT_API_PATH_TEMPLATE: str = (
+    "/api/pulp/{domain}/api/v3/content/npm/packages/"
+)
+NPM_VERSIONS_API_PATH_TEMPLATE: str = "{repository_href}versions/"
+
 # Task polling configuration
 TASK_POLL_INITIAL_INTERVAL_SECONDS = 2.0
 TASK_POLL_MAX_INTERVAL_SECONDS = 30.0

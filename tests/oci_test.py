@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -12,10 +13,12 @@ import pytest
 from slan_cuan.models import ImageReference
 from slan_cuan.oci import (
     OrasError,
+    blob_fetch,
     deduplicate_referrers,
     discover,
     manifest_fetch,
     pull,
+    push,
 )
 
 
@@ -89,6 +92,19 @@ class TestPull:
             pull(image_ref, tmp_path)
 
     @patch("slan_cuan.oci.subprocess.run")
+    def test_pull_not_found_uppercase_error_code(
+        self, mock_run: Mock, image_ref: ImageReference, tmp_path: Path
+    ) -> None:
+        """A bare uppercase MANIFEST_UNKNOWN error code is not-found too."""
+        mock_run.return_value = Mock(
+            returncode=1,
+            stderr="Error: GET https://quay.io/v2/x: MANIFEST_UNKNOWN",
+            stdout="",
+        )
+        with pytest.raises(OrasError, match="Image not found"):
+            pull(image_ref, tmp_path)
+
+    @patch("slan_cuan.oci.subprocess.run")
     def test_pull_not_found_404(
         self, mock_run: Mock, image_ref: ImageReference, tmp_path: Path
     ) -> None:
@@ -96,6 +112,19 @@ class TestPull:
         mock_run.return_value = Mock(
             returncode=1,
             stderr="Error: 404 Not Found",
+            stdout="",
+        )
+        with pytest.raises(OrasError, match="Image not found"):
+            pull(image_ref, tmp_path)
+
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_pull_not_found_404_case_insensitive(
+        self, mock_run: Mock, image_ref: ImageReference, tmp_path: Path
+    ) -> None:
+        """Oras pull classifies a lowercase '404 not found' as not-found."""
+        mock_run.return_value = Mock(
+            returncode=1,
+            stderr="error: 404 not found",
             stdout="",
         )
         with pytest.raises(OrasError, match="Image not found"):
@@ -584,3 +613,523 @@ class TestDeduplicateReferrers:
                 image_ref,
                 manifest_fetch_fn=mock_fetch,
             )
+
+
+class TestPush:
+    """Tests for the push() function."""
+
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_push_builds_oras_command_with_annotations(
+        self, mock_run: Mock, tmp_path: Path
+    ) -> None:
+        """Push constructs command with annotations and bare filename."""
+        mock_run.return_value = Mock(
+            returncode=0,
+            stderr="",
+            stdout=(
+                "Digest: "
+                "sha256:1234567890abcdef1234567890abcdef"
+                "1234567890abcdef1234567890abcdef\n"
+            ),
+        )
+        artifact_path = tmp_path / "artifact.json"
+        artifact_path.write_text('{"data": "test"}')
+
+        annotations = {"key1": "value1", "key2": "value2"}
+        push(
+            artifact_path,
+            "quay.io/registry/repo:latest",
+            annotations=annotations,
+        )
+
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "oras"
+        assert cmd[1] == "push"
+        assert "quay.io/registry/repo:latest" in cmd
+        assert "--annotation" in cmd
+        assert "key1=value1" in cmd
+        assert "key2=value2" in cmd
+        assert "artifact.json" in cmd
+        assert str(artifact_path) not in cmd  # bare name, not full path
+
+        # Verify cwd is the parent directory
+        assert mock_run.call_args[1]["cwd"] == artifact_path.parent
+
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_push_extracts_digest_from_stdout(
+        self, mock_run: Mock, tmp_path: Path
+    ) -> None:
+        """Push extracts digest from Digest: line in stdout."""
+        digest = (
+            "sha256:1234567890abcdef1234567890abcdef"
+            "1234567890abcdef1234567890abcdef"
+        )
+        mock_run.return_value = Mock(
+            returncode=0,
+            stderr="",
+            stdout=f"Digest: {digest}\n",
+        )
+        artifact_path = tmp_path / "test.json"
+        artifact_path.write_text("{}")
+
+        result = push(
+            artifact_path,
+            "registry/repo:tag",
+            annotations={},
+        )
+
+        assert result == digest
+
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_push_falls_back_to_resolve_when_no_digest_line(
+        self, mock_run: Mock, tmp_path: Path
+    ) -> None:
+        """Push falls back to resolve when digest line not in stdout."""
+        digest = (
+            "sha256:fedcba0987654321fedcba0987654321"
+            "fedcba0987654321fedcba0987654321"
+        )
+        # First call: push (no digest line)
+        # Second call: resolve returns digest
+        mock_run.side_effect = [
+            Mock(
+                returncode=0,
+                stderr="",
+                stdout="Push succeeded\n",
+            ),
+            Mock(
+                returncode=0,
+                stderr="",
+                stdout=f"registry/repo:tag@{digest}\n",
+            ),
+        ]
+        artifact_path = tmp_path / "test.json"
+        artifact_path.write_text("{}")
+
+        result = push(
+            artifact_path,
+            "registry/repo:tag",
+            annotations={},
+        )
+
+        assert result == digest
+        assert mock_run.call_count == 2
+
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_push_raises_oras_error_when_digest_unresolvable(
+        self, mock_run: Mock, tmp_path: Path
+    ) -> None:
+        """Push raises OrasError when no digest found in push or resolve."""
+        # Both push and resolve lack a digest line
+        mock_run.side_effect = [
+            Mock(
+                returncode=0,
+                stderr="",
+                stdout="No digest info\n",
+            ),
+            Mock(
+                returncode=0,
+                stderr="",
+                stdout="No @ in this response\n",
+            ),
+        ]
+        artifact_path = tmp_path / "test.json"
+        artifact_path.write_text("{}")
+
+        with pytest.raises(OrasError, match="Could not extract digest"):
+            push(
+                artifact_path,
+                "registry/repo:tag",
+                annotations={},
+            )
+
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_push_raises_oras_error_on_nonzero_returncode(
+        self, mock_run: Mock, tmp_path: Path
+    ) -> None:
+        """Push raises OrasError when oras command fails."""
+        mock_run.return_value = Mock(
+            returncode=1,
+            stderr="Error: push failed",
+            stdout="",
+        )
+        artifact_path = tmp_path / "test.json"
+        artifact_path.write_text("{}")
+
+        with pytest.raises(OrasError, match="oras push failed"):
+            push(
+                artifact_path,
+                "registry/repo:tag",
+                annotations={},
+            )
+
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_push_includes_artifact_type_when_provided(
+        self, mock_run: Mock, tmp_path: Path
+    ) -> None:
+        """Push includes --artifact-type when artifact_type parameter given."""
+        mock_run.return_value = Mock(
+            returncode=0,
+            stderr="",
+            stdout=(
+                "Digest: "
+                "sha256:1234567890abcdef1234567890abcdef"
+                "1234567890abcdef1234567890abcdef\n"
+            ),
+        )
+        artifact_path = tmp_path / "artifact.json"
+        artifact_path.write_text("{}")
+
+        push(
+            artifact_path,
+            "registry/repo:tag",
+            artifact_type="application/vnd.custom+json",
+            annotations={},
+        )
+
+        cmd = mock_run.call_args[0][0]
+        assert "--artifact-type" in cmd
+        assert "application/vnd.custom+json" in cmd
+
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_push_with_auth_file(self, mock_run: Mock, tmp_path: Path) -> None:
+        """Push includes --registry-config when auth_file provided."""
+        mock_run.return_value = Mock(
+            returncode=0,
+            stderr="",
+            stdout=(
+                "Digest: "
+                "sha256:1234567890abcdef1234567890abcdef"
+                "1234567890abcdef1234567890abcdef\n"
+            ),
+        )
+        artifact_path = tmp_path / "artifact.json"
+        artifact_path.write_text("{}")
+        auth_file = Path("/path/to/auth.json")
+
+        push(
+            artifact_path,
+            "registry/repo:tag",
+            annotations={},
+            auth_file=auth_file,
+        )
+
+        cmd = mock_run.call_args[0][0]
+        assert "--registry-config" in cmd
+        assert str(auth_file) in cmd
+
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_push_verbose_prints_command(
+        self,
+        mock_run: Mock,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Push with verbose=True prints the command."""
+        mock_run.return_value = Mock(
+            returncode=0,
+            stderr="",
+            stdout=(
+                "Digest: "
+                "sha256:1234567890abcdef1234567890abcdef"
+                "1234567890abcdef1234567890abcdef\n"
+            ),
+        )
+        artifact_path = tmp_path / "artifact.json"
+        artifact_path.write_text("{}")
+
+        push(
+            artifact_path,
+            "registry/repo:tag",
+            annotations={},
+            verbose=True,
+        )
+
+        captured = capsys.readouterr()
+        assert "Running: oras push" in captured.out
+
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_push_auth_failure(self, mock_run: Mock, tmp_path: Path) -> None:
+        """Push raises OrasError for authentication failure."""
+        mock_run.return_value = Mock(
+            returncode=1,
+            stderr="Error: 401 Unauthorized",
+            stdout="",
+        )
+        artifact_path = tmp_path / "test.json"
+        artifact_path.write_text("{}")
+
+        with pytest.raises(OrasError, match="Authentication failed"):
+            push(
+                artifact_path,
+                "quay.io/registry/repo:tag",
+                annotations={},
+            )
+
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_push_not_found(self, mock_run: Mock, tmp_path: Path) -> None:
+        """Push raises OrasError for not found."""
+        mock_run.return_value = Mock(
+            returncode=1,
+            stderr="Error: 404 Not Found",
+            stdout="",
+        )
+        artifact_path = tmp_path / "test.json"
+        artifact_path.write_text("{}")
+
+        with pytest.raises(OrasError, match="Image not found"):
+            push(
+                artifact_path,
+                "registry/repo:tag",
+                annotations={},
+            )
+
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_push_network_error(self, mock_run: Mock, tmp_path: Path) -> None:
+        """Push raises OrasError for network errors."""
+        mock_run.return_value = Mock(
+            returncode=1,
+            stderr="Error: connection refused",
+            stdout="",
+        )
+        artifact_path = tmp_path / "test.json"
+        artifact_path.write_text("{}")
+
+        with pytest.raises(OrasError, match="Network error pushing"):
+            push(
+                artifact_path,
+                "registry/repo:tag",
+                annotations={},
+            )
+
+
+#: Image used by the cross-function classification tests below.
+_CLASSIFY_IMAGE = ImageReference(
+    registry="quay.io",
+    repository="org/repo",
+    tag="v1",
+    digest=None,
+)
+_CLASSIFY_BLOB_REF = "quay.io/org/repo@sha256:" + "a" * 64
+
+
+def _call_pull(tmp_path: Path) -> None:
+    pull(_CLASSIFY_IMAGE, tmp_path / "out")
+
+
+def _call_blob_fetch(tmp_path: Path) -> None:
+    blob_fetch(_CLASSIFY_BLOB_REF, tmp_path / "blob")
+
+
+def _call_manifest_fetch(tmp_path: Path) -> None:
+    manifest_fetch(_CLASSIFY_IMAGE)
+
+
+def _call_discover(tmp_path: Path) -> None:
+    discover(_CLASSIFY_IMAGE, "application/vnd.example.sbom")
+
+
+def _call_push(tmp_path: Path) -> None:
+    artifact = tmp_path / "test.json"
+    artifact.write_text("{}")
+    push(artifact, str(_CLASSIFY_IMAGE), annotations={})
+
+
+#: (callable, expected not-found message, expected generic prefix)
+_ORAS_FUNCS = [
+    pytest.param(
+        _call_pull,
+        f"Image not found: {_CLASSIFY_IMAGE}",
+        "oras pull failed: ",
+        id="pull",
+    ),
+    pytest.param(
+        _call_blob_fetch,
+        f"Blob not found: {_CLASSIFY_BLOB_REF}",
+        "oras blob fetch failed: ",
+        id="blob_fetch",
+    ),
+    pytest.param(
+        _call_manifest_fetch,
+        f"Image not found: {_CLASSIFY_IMAGE}",
+        "oras manifest fetch failed: ",
+        id="manifest_fetch",
+    ),
+    pytest.param(
+        _call_discover,
+        f"Image not found: {_CLASSIFY_IMAGE}",
+        "oras discover failed: ",
+        id="discover",
+    ),
+    pytest.param(
+        _call_push,
+        f"Image not found: {_CLASSIFY_IMAGE}",
+        "oras push failed: ",
+        id="push",
+    ),
+]
+
+
+class TestOrasErrorClassification:
+    """Shared stderr classification across every oras wrapper."""
+
+    #: Verbatim stderr from real ``oras pull`` (oras 1.3.0) against Quay
+    #: for a tag that does not exist -- no "404"/"manifest unknown".
+    REAL_ORAS_NOT_FOUND = (
+        "Error response from registry: "
+        "quay.io/prometheus/busybox:lwlp4134-nonexistent-tag: not found"
+    )
+
+    @pytest.mark.parametrize(("call", "not_found_msg", "generic"), _ORAS_FUNCS)
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_real_oras_trailing_not_found_is_not_found(
+        self,
+        mock_run: Mock,
+        call: Callable[[Path], None],
+        not_found_msg: str,
+        generic: str,
+        tmp_path: Path,
+    ) -> None:
+        """Real oras ``...: not found`` stderr is classified as not-found."""
+        mock_run.return_value = Mock(
+            returncode=1, stderr=self.REAL_ORAS_NOT_FOUND + "\n", stdout=""
+        )
+        with pytest.raises(OrasError) as excinfo:
+            call(tmp_path)
+        assert excinfo.value.message == not_found_msg
+        assert excinfo.value.stderr == self.REAL_ORAS_NOT_FOUND
+        assert excinfo.value.returncode == 1
+
+    @pytest.mark.parametrize(("call", "not_found_msg", "generic"), _ORAS_FUNCS)
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_trailing_not_found_beats_network_keyword_in_ref(
+        self,
+        mock_run: Mock,
+        call: Callable[[Path], None],
+        not_found_msg: str,
+        generic: str,
+        tmp_path: Path,
+    ) -> None:
+        """A ref echoing "timeout"/"connection" is still not-found."""
+        mock_run.return_value = Mock(
+            returncode=1,
+            stderr=(
+                "Error response from registry: "
+                "quay.io/org/repo:timeout-signal-2.0.0: not found"
+            ),
+            stdout="",
+        )
+        with pytest.raises(OrasError) as excinfo:
+            call(tmp_path)
+        assert excinfo.value.message == not_found_msg
+
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            "Error: credential helper not found in PATH",
+            "Error: resource not found: access denied",
+        ],
+    )
+    @pytest.mark.parametrize(("call", "not_found_msg", "generic"), _ORAS_FUNCS)
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_unanchored_not_found_stays_generic(
+        self,
+        mock_run: Mock,
+        call: Callable[[Path], None],
+        not_found_msg: str,
+        generic: str,
+        stderr: str,
+        tmp_path: Path,
+    ) -> None:
+        """A "not found" that isn't the trailing ``: not found`` is generic."""
+        mock_run.return_value = Mock(returncode=1, stderr=stderr, stdout="")
+        with pytest.raises(OrasError) as excinfo:
+            call(tmp_path)
+        assert excinfo.value.message == generic + stderr
+
+    @pytest.mark.parametrize(("call", "not_found_msg", "generic"), _ORAS_FUNCS)
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_auth_beats_trailing_not_found(
+        self,
+        mock_run: Mock,
+        call: Callable[[Path], None],
+        not_found_msg: str,
+        generic: str,
+        tmp_path: Path,
+    ) -> None:
+        """Auth failure keeps precedence over a trailing ``: not found``."""
+        mock_run.return_value = Mock(
+            returncode=1,
+            stderr="Error: 401 Unauthorized: token not found",
+            stdout="",
+        )
+        with pytest.raises(OrasError, match="^Authentication failed for "):
+            call(tmp_path)
+
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            "Error: 401 UNAUTHORIZED",
+            "Error: Authentication Required",
+        ],
+    )
+    @pytest.mark.parametrize(("call", "not_found_msg", "generic"), _ORAS_FUNCS)
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_auth_failure_is_case_insensitive(
+        self,
+        mock_run: Mock,
+        call: Callable[[Path], None],
+        not_found_msg: str,
+        generic: str,
+        stderr: str,
+        tmp_path: Path,
+    ) -> None:
+        """Upper/mixed-case auth-failure strings are still classified."""
+        mock_run.return_value = Mock(returncode=1, stderr=stderr, stdout="")
+        with pytest.raises(OrasError, match="^Authentication failed for "):
+            call(tmp_path)
+
+    @pytest.mark.parametrize(("call", "not_found_msg", "generic"), _ORAS_FUNCS)
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_multiline_stderr_trailing_not_found_is_not_found(
+        self,
+        mock_run: Mock,
+        call: Callable[[Path], None],
+        not_found_msg: str,
+        generic: str,
+        tmp_path: Path,
+    ) -> None:
+        """Multi-line stderr is not-found when the FINAL line ends that way."""
+        stderr = (
+            "Warning: using cached credentials\n"
+            "Error response from registry: "
+            "quay.io/org/repo:tag: not found"
+        )
+        mock_run.return_value = Mock(returncode=1, stderr=stderr, stdout="")
+        with pytest.raises(OrasError) as excinfo:
+            call(tmp_path)
+        assert excinfo.value.message == not_found_msg
+
+    @pytest.mark.parametrize(("call", "not_found_msg", "generic"), _ORAS_FUNCS)
+    @patch("slan_cuan.oci.subprocess.run")
+    def test_multiline_stderr_not_found_on_nonfinal_line_stays_generic(
+        self,
+        mock_run: Mock,
+        call: Callable[[Path], None],
+        not_found_msg: str,
+        generic: str,
+        tmp_path: Path,
+    ) -> None:
+        """A ``: not found`` on a non-final line does not match.
+
+        Only the real final line -- a generic error summary here -- should
+        drive classification.
+        """
+        stderr = (
+            "quay.io/org/repo:tag: not found\n"
+            "Error: unexpected server error (HTTP 500)"
+        )
+        mock_run.return_value = Mock(returncode=1, stderr=stderr, stdout="")
+        with pytest.raises(OrasError) as excinfo:
+            call(tmp_path)
+        assert excinfo.value.message == generic + stderr

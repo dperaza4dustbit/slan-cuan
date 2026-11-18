@@ -57,6 +57,15 @@ class FileContentUnit:
 
 
 @dataclass(frozen=True)
+class NpmContentUnit:
+    """A content unit returned by the Pulp npm package upload endpoint."""
+
+    pulp_href: str
+    name: str
+    version: str
+
+
+@dataclass(frozen=True)
 class ModifyResult:
     """Result of a repository modify operation."""
 

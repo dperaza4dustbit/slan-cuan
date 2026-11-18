@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import click
@@ -23,19 +24,57 @@ from slan_cuan.models import parse_image_ref
 DEFAULT_PROVENANCE_KEY = "k8s://openshift-pipelines/public-key"
 
 
+def _format_failures(failures: list[tuple[str, str]]) -> str:
+    """Render per-predicate-type cosign stderr for an error message.
+
+    A single attempted type renders as its bare stderr (the original
+    single-call message format); multiple types render each type's
+    stderr labelled by type, so no failure reason is hidden.
+    """
+    if len(failures) == 1:
+        return failures[0][1]
+    return "; ".join(
+        f"[--type={ptype}] {stderr or '(no stderr)'}"
+        for ptype, stderr in failures
+    )
+
+
 def fetch_chains_provenance(
     image_ref_str: str,
     provenance_dir: Path,
     key_ref: str,
     registry_auth_file: Path | None = None,
     verbose: bool = False,
+    *,
+    predicate_types: Sequence[str] = ("slsaprovenance",),
+    select: Callable[[list[dict]], dict] | None = None,
 ) -> Path:
     """Fetch and verify Tekton Chains SLSA provenance for an image.
 
-    Runs ``cosign verify-attestation`` against the given key reference,
-    decodes the first DSSE envelope's payload, and saves it as
-    ``<digest>.json`` so downstream consumers can match provenance to
-    the image that produced it.
+    Runs ``cosign verify-attestation --type=<t>`` once per entry in
+    ``predicate_types``, treating a non-zero exit from a single type as
+    "that type produced no envelopes" rather than a hard failure. Every
+    DSSE envelope's decoded payload, across all successful invocations,
+    is collected into one ``candidates`` list in invocation order. A
+    single envelope line that fails to decode (malformed JSON, missing
+    ``payload``, bad base64) is likewise non-fatal — it simply
+    contributes no candidate.
+
+    Two failure tiers are checked before any candidate selection, so
+    they stay distinguishable from a trust-policy rejection: if every
+    type's cosign invocation failed, ``click.ClickException`` is raised
+    carrying cosign's real stderr (per type when several were tried);
+    if cosign succeeded but no envelope decoded, a "returned no
+    attestations" ``click.ClickException`` is raised.
+
+    Otherwise, when ``select`` is ``None`` (the default, single-type
+    usage), the first candidate is written. When ``select`` is given,
+    ``select(candidates)`` is called on the non-empty candidate list and
+    its return value is written instead; ``select`` itself is
+    responsible for raising if no candidate qualifies.
+
+    Saves the chosen payload as ``<digest>.json`` so downstream
+    consumers can match provenance to the image that produced it.
     """
     img_ref = parse_image_ref(image_ref_str)
     if not img_ref.digest:
@@ -47,16 +86,6 @@ def fetch_chains_provenance(
     provenance_dir.mkdir(parents=True, exist_ok=True)
     out_file = provenance_dir / f"{img_ref.digest}.json"
 
-    cmd = [
-        "cosign",
-        "verify-attestation",
-        "--type=slsaprovenance",
-        "--insecure-ignore-tlog=true",
-        "--insecure-ignore-sct=true",
-        "--key",
-        key_ref,
-        image_ref_str,
-    ]
     env = os.environ.copy()
     docker_config_dir = None
     if registry_auth_file is not None:
@@ -68,22 +97,62 @@ def fetch_chains_provenance(
     try:
         if verbose:
             click.echo(f"Fetching Chains provenance for {image_ref_str}")
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, check=False, env=env
-        )
-        if result.returncode != 0:
+        candidates: list[dict] = []
+        any_type_succeeded = False
+        failures: list[tuple[str, str]] = []
+        for predicate_type in predicate_types:
+            cmd = [
+                "cosign",
+                "verify-attestation",
+                f"--type={predicate_type}",
+                "--insecure-ignore-tlog=true",
+                "--insecure-ignore-sct=true",
+                "--key",
+                key_ref,
+                image_ref_str,
+            ]
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, check=False, env=env
+            )
+            if result.returncode != 0:
+                # A single predicate type failing isn't fatal on its
+                # own — it just contributes no candidates. Only
+                # raised if every type fails (below).
+                failures.append((predicate_type, result.stderr.strip()))
+                continue
+            any_type_succeeded = True
+            stdout = result.stdout.strip()
+            if not stdout:
+                continue
+            for line in stdout.splitlines():
+                # A malformed/undecodable envelope line isn't fatal
+                # to the invocation either — it just contributes no
+                # candidate, consistent with how a whole predicate
+                # type failing is handled above.
+                try:
+                    envelope = json.loads(line)
+                    payload = json.loads(base64.b64decode(envelope["payload"]))
+                except (ValueError, KeyError):
+                    continue
+                candidates.append(payload)
+
+        # Order matters: a cosign infrastructure failure (bad key,
+        # unreachable registry/tlog, ...) on every type must surface
+        # cosign's own stderr, never be masked by select()'s generic
+        # trust-policy rejection message — mirroring the bash
+        # original's `verified -ne 1` check before its jq filter.
+        if not any_type_succeeded:
             raise click.ClickException(
                 "cosign verify-attestation failed for "
-                f"{image_ref_str}: {result.stderr.strip()}"
+                f"{image_ref_str}: {_format_failures(failures)}"
             )
-        stdout = result.stdout.strip()
-        if not stdout:
+        if not candidates:
             raise click.ClickException(
                 "cosign verify-attestation returned no attestations for "
                 f"{image_ref_str}"
             )
-        envelope = json.loads(stdout.splitlines()[0])
-        payload = json.loads(base64.b64decode(envelope["payload"]))
+        payload = select(candidates) if select is not None else candidates[0]
+
         out_file.write_text(
             json.dumps(payload, indent=2) + "\n", encoding="utf-8"
         )
