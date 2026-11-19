@@ -992,7 +992,7 @@ class TestRequestLogging:
 
 
 class TestLabels:
-    """Tests for get_labels() and set_label() methods."""
+    """Tests for get_labels(), set_label(), and set_labels() methods."""
 
     def test_get_labels_returns_pulp_labels_dict(self) -> None:
         """get_labels extracts pulp_labels dict from response."""
@@ -1280,6 +1280,100 @@ class TestLabels:
             "k",
             "v",
         )
+
+        assert captured_headers.get("x-task-diagnostics") == "pyinstrument"
+
+    def test_set_labels_merges_and_patches_once(self) -> None:
+        """set_labels GETs current labels, merges, and PATCHes once."""
+        captured_requests = []
+        captured_payload = None
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal captured_payload
+            captured_requests.append(request.method)
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={"pulp_labels": {"existing": "kept"}},
+                )
+            if request.method == "PATCH":
+                captured_payload = json.loads(request.content)
+                return httpx.Response(200, json={})
+            return httpx.Response(404)
+
+        transport = httpx.MockTransport(handler)
+        config = PulpConfig(
+            base_url="https://pulp.example.com",
+            verify_ssl=True,
+            username="testuser",
+            password="testpass",
+        )
+        client = PulpMavenClient(config, "test-dist")
+        client._client = httpx.Client(
+            transport=transport, base_url="https://pulp.example.com"
+        )
+
+        client.set_labels(
+            "/api/v3/repositories/maven/maven/uuid/",
+            {"a": "1", "b": "2"},
+        )
+
+        assert captured_requests == ["GET", "PATCH"]
+        assert captured_payload == {
+            "pulp_labels": {"existing": "kept", "a": "1", "b": "2"}
+        }
+
+    def test_set_labels_with_empty_dict_makes_no_requests(self) -> None:
+        """set_labels is a no-op when given an empty labels dict."""
+        captured_requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured_requests.append(request.method)
+            return httpx.Response(200, json={})
+
+        transport = httpx.MockTransport(handler)
+        config = PulpConfig(
+            base_url="https://pulp.example.com",
+            verify_ssl=True,
+            username="testuser",
+            password="testpass",
+        )
+        client = PulpMavenClient(config, "test-dist")
+        client._client = httpx.Client(
+            transport=transport, base_url="https://pulp.example.com"
+        )
+
+        client.set_labels("/api/v3/repositories/maven/maven/uuid/", {})
+
+        assert captured_requests == []
+
+    def test_set_labels_sends_custom_headers(self) -> None:
+        """set_labels attaches custom_headers to the PATCH request."""
+        captured_headers: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal captured_headers
+            if request.method == "GET":
+                return httpx.Response(200, json={"pulp_labels": {}})
+            if request.method == "PATCH":
+                captured_headers = dict(request.headers)
+                return httpx.Response(200, json={})
+            return httpx.Response(404)
+
+        transport = httpx.MockTransport(handler)
+        config = PulpConfig(
+            base_url="https://pulp.example.com",
+            verify_ssl=True,
+            username="testuser",
+            password="testpass",
+            custom_headers={"X-TASK-DIAGNOSTICS": "pyinstrument"},
+        )
+        client = PulpMavenClient(config, "test-dist")
+        client._client = httpx.Client(
+            transport=transport, base_url="https://pulp.example.com"
+        )
+
+        client.set_labels("/api/v3/repositories/maven/maven/uuid/", {"k": "v"})
 
         assert captured_headers.get("x-task-diagnostics") == "pyinstrument"
 

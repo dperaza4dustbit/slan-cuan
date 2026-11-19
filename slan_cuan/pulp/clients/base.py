@@ -725,6 +725,45 @@ class PulpClientBase:
             headers=self._config.custom_headers or None,
         )
 
+    def set_labels(self, href: str, labels: dict[str, str]) -> None:
+        """Set multiple labels on a Pulp resource in a single write.
+
+        Pulp's ``set_label/`` action only accepts one key/value pair per
+        call. The resource's ``pulp_labels`` field itself accepts a full
+        dict, so this reads the current labels, merges in the given ones,
+        and writes the merged dict back with one PATCH -- two requests
+        total instead of one ``set_label`` POST per key.
+
+        This read-modify-write is not atomic: a label written by a
+        concurrent caller between the GET and the PATCH here is clobbered.
+        Only use this for keys that are exclusively owned by one writer at
+        this point in the flow. For labels that may be written
+        concurrently or need compare-and-swap, use ``set_label`` instead,
+        whose ``set_label/`` action is a server-side atomic upsert of a
+        single key.
+
+        Args:
+            href: The pulp_href of the resource.
+            labels: Mapping of label keys to values to set.
+
+        Raises:
+            PulpError: If the GET or PATCH request fails.
+
+        """
+        if not labels:
+            return
+
+        current_labels = self.get_labels(href)
+        merged_labels = {**current_labels, **labels}
+
+        self._request(
+            "PATCH",
+            href,
+            "Set labels",
+            json={"pulp_labels": merged_labels},
+            headers=self._config.custom_headers or None,
+        )
+
     def list_content(
         self, list_url: str, **filters: str
     ) -> list[dict[str, object]]:
