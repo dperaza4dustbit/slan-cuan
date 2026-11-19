@@ -481,12 +481,17 @@ class PulpClientBase:
         *,
         protection_time: int = 0,
     ) -> None:
-        """Clean up orphaned content units from the domain.
+        """Delete the given content units from the domain if they are orphans.
 
-        Mirrors npm-pulp-upload::orphan_cleanup_content, generalized to
-        always require explicit content_hrefs (never a bare "clean
-        everything" call) so other ecosystems' orphans in the same domain
-        are never swept.
+        A content unit is an orphan when no repository version references
+        it. This starts Pulp's orphan cleanup task, limited to
+        ``content_hrefs``, and blocks until the task finishes. Listed
+        units that are still in a repository version are left alone.
+
+        The cleanup is always limited to explicit hrefs, never run
+        domain-wide, because a domain can hold content from several
+        ecosystems and a domain-wide cleanup would delete their orphans
+        too.
 
         Args:
             content_hrefs: List of content unit pulp_href values to clean
@@ -681,7 +686,7 @@ class PulpClientBase:
         cas_digest: str | None = None,
         cas_label_key: str = "",
     ) -> None:
-        """Set a label on a Pulp resource with optional compare-and-swap.
+        """Set a label on a Pulp resource with optional compare-and-swap (CAS).
 
         When cas_digest is provided, first checks that the current value of
         cas_label_key either does not exist or matches cas_digest. If the

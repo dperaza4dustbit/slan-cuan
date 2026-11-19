@@ -49,32 +49,38 @@ def fetch_chains_provenance(
     predicate_types: Sequence[str] = ("slsaprovenance",),
     select: Callable[[list[dict]], dict] | None = None,
 ) -> Path:
-    """Fetch and verify Tekton Chains SLSA provenance for an image.
+    """Fetch, verify, and save a Tekton Chains attestation for an image.
 
-    Runs ``cosign verify-attestation --type=<t>`` once per entry in
-    ``predicate_types``, treating a non-zero exit from a single type as
-    "that type produced no envelopes" rather than a hard failure. Every
-    DSSE envelope's decoded payload, across all successful invocations,
-    is collected into one ``candidates`` list in invocation order. A
-    single envelope line that fails to decode (malformed JSON, missing
-    ``payload``, bad base64) is likewise non-fatal — it simply
-    contributes no candidate.
+    Verifies the image's attestations with ``cosign verify-attestation``
+    against ``key_ref``, picks one decoded in-toto statement, and writes it
+    to ``provenance_dir/<digest>.json``.
 
-    Two failure tiers are checked before any candidate selection, so
-    they stay distinguishable from a trust-policy rejection: if every
-    type's cosign invocation failed, ``click.ClickException`` is raised
-    carrying cosign's real stderr (per type when several were tried);
-    if cosign succeeded but no envelope decoded, a "returned no
-    attestations" ``click.ClickException`` is raised.
+    cosign is run once per entry in ``predicate_types``. A type whose
+    cosign call fails, or an envelope line that can't be decoded, is
+    skipped. Note that this also hides a real cosign error on one type
+    when another type succeeds. All decoded payloads are collected in
+    invocation order.
 
-    Otherwise, when ``select`` is ``None`` (the default, single-type
-    usage), the first candidate is written. When ``select`` is given,
-    ``select(candidates)`` is called on the non-empty candidate list and
-    its return value is written instead; ``select`` itself is
-    responsible for raising if no candidate qualifies.
+    Args:
+        image_ref_str: Image reference; must include a digest.
+        provenance_dir: Output directory (created if missing).
+        key_ref: cosign key reference used for verification.
+        registry_auth_file: Optional registry auth (docker config JSON).
+        verbose: Echo progress messages.
+        predicate_types: cosign ``--type`` values to try.
+        select: Picks the payload to save from the non-empty candidate
+            list; must raise if none is acceptable. Defaults to the
+            first candidate.
 
-    Saves the chosen payload as ``<digest>.json`` so downstream
-    consumers can match provenance to the image that produced it.
+    Returns:
+        Path to the written JSON file.
+
+    Raises:
+        click.ClickException: If the reference has no digest, if cosign
+        fails for every type (message includes cosign's stderr), or
+            if cosign succeeds but no attestation decodes. Exceptions
+            raised by ``select`` propagate unchanged.
+
     """
     img_ref = parse_image_ref(image_ref_str)
     if not img_ref.digest:

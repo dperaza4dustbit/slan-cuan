@@ -161,14 +161,16 @@ class PulpNpmClient(PulpClientBase):
     def list_versions_by_name(
         self, name: str, repository_version_href: str
     ) -> list[dict[str, object]]:
-        """List every content row for an exact name within a repo version.
+        """Return every version of an npm package in a repository version.
 
-        Unlike ``find_by_name_version``, does not filter by version at
-        all -- this is the query shape semver-range dependency resolution
-        needs: every version Pulp actually holds for ``name`` within the
-        repository version, so a caller can pick the best match itself
-        (e.g. via ``slan_cuan.npm.semver.max_satisfying``) instead of
-        requiring a byte-identical version string.
+        Lists all content units named exactly ``name`` in
+        ``repository_version_href``, whatever their version. Use this when
+        the caller chooses the version itself, for example to resolve a
+        semver range. Use ``find_by_name_version`` to look up one exact
+        version.
+
+        Rows are filtered again client-side on an exact ``name`` match,
+        so only units with exactly that name are returned.
 
         Args:
             name: npm package name to match exactly.
