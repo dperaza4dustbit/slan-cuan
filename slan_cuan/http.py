@@ -2,15 +2,71 @@
 
 from __future__ import annotations
 
+import os
+import random
 import ssl
+import time
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import click
 import httpx
 
 from slan_cuan.utils import safe_json_load
 
 ERROR_BODY_MAX_LENGTH = 200
+
+# Retry policy for transient server-side failures (HTTP 5xx and connection
+# errors).  A single transient error during a long run of content uploads
+# should not fail the whole release, so request() retries with exponential
+# backoff and only gives up after consecutive failures.
+DEFAULT_RETRIES = int(os.getenv("SLAN_CUAN_PULP_RETRIES", "3"))
+"""Total attempts per request (initial attempt + retries)."""
+DEFAULT_BACKOFF_SECONDS = float(
+    os.getenv("SLAN_CUAN_PULP_BACKOFF_SECONDS", "1.0")
+)
+"""Base backoff; attempt N sleeps ``base * 2**(N-1)`` plus jitter."""
+MAX_BACKOFF_SECONDS = 30.0
+"""Upper bound on any single sleep between attempts."""
+BACKOFF_JITTER_RATIO = 0.25
+"""Up to this fraction of the delay is added as random jitter."""
+
+_sleep = time.sleep  # module seam so tests can disable real backoff sleeps
+
+
+def _utc_timestamp() -> str:
+    """Return current UTC timestamp in ISO-8601 format."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def compute_backoff(
+    attempt: int,
+    base: float = DEFAULT_BACKOFF_SECONDS,
+    cap: float = MAX_BACKOFF_SECONDS,
+    jitter: float = BACKOFF_JITTER_RATIO,
+    rand: Callable[[], float] = random.random,
+) -> float:
+    """Return the sleep before retrying after failed *attempt* (1-based).
+
+    Exponential (``base * 2**(attempt-1)``) with up to *jitter* fraction of
+    random extra delay, so concurrent runs do not retry in lockstep.  The
+    result never exceeds *cap*.
+    """
+    delay = min(base * (2 ** (attempt - 1)), cap)
+    return min(delay + delay * jitter * rand(), cap)
+
+
+def _rewind_files(files: Any) -> None:
+    """Seek multipart file objects back to the start before a retry."""
+    if not isinstance(files, dict):
+        return
+    for value in files.values():
+        fobj = value[1] if isinstance(value, tuple) and len(value) > 1 else value
+        seek = getattr(fobj, "seek", None)
+        if callable(seek):
+            seek(0)
 
 
 class HttpApiError(Exception):
@@ -136,12 +192,23 @@ def request(
     url: str,
     operation: str,
     error_cls: type[HttpApiError],
+    *,
+    retries: int | None = None,
+    backoff_seconds: float | None = None,
+    sleep: Callable[[float], None] | None = None,
     **kwargs: Any,
 ) -> httpx.Response:
-    """Send an HTTP request with standardised error handling.
+    """Send an HTTP request with standardised error handling and retry.
 
     Wraps ``client.request()`` to catch transport errors and check the
     response status, converting both into *error_cls* instances.
+
+    Transient failures -- HTTP 5xx responses and ``httpx.ConnectError`` --
+    are retried with exponential backoff and jitter.  4xx responses are
+    never retried (the request itself is wrong), and timeouts are not
+    retried (the server may still be processing a non-idempotent request).
+    After the final attempt the same error as a non-retried failure is
+    raised.
 
     Args:
         client: The httpx client to use.
@@ -149,6 +216,12 @@ def request(
         url: Request URL (absolute or relative to client base_url).
         operation: Human-readable name for error messages.
         error_cls: Exception class to raise on failure.
+        retries: Total attempts (default ``DEFAULT_RETRIES``, env
+            ``SLAN_CUAN_PULP_RETRIES``).  Values < 1 are treated as 1.
+        backoff_seconds: Base backoff (default ``DEFAULT_BACKOFF_SECONDS``,
+            env ``SLAN_CUAN_PULP_BACKOFF_SECONDS``).
+        sleep: Sleep function, injectable for tests (default
+            ``time.sleep``).
         **kwargs: Forwarded to ``client.request()``.
 
     Returns:
@@ -158,23 +231,71 @@ def request(
         error_cls: On transport errors or HTTP error status.
 
     """
-    try:
-        response = client.request(method, url, **kwargs)
-    except httpx.ConnectError as e:
-        raise error_cls(
-            f"Connection failed: {e}",
-            status_code=0,
-            response_body="",
-        ) from e
-    except httpx.TimeoutException as e:
-        raise error_cls(
-            f"Request timed out: {e}",
-            status_code=0,
-            response_body="",
-        ) from e
+    sleep = sleep or _sleep
+    attempts = max(1, DEFAULT_RETRIES if retries is None else retries)
+    base = DEFAULT_BACKOFF_SECONDS if backoff_seconds is None else backoff_seconds
 
-    raise_for_status(response, operation, error_cls)
-    return response
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            _rewind_files(kwargs.get("files"))
+        try:
+            response = client.request(method, url, **kwargs)
+        except httpx.ConnectError as e:
+            if attempt < attempts:
+                _log_retry(
+                    operation,
+                    f"connection error ({e})",
+                    attempt,
+                    attempts,
+                    base,
+                    sleep,
+                )
+                continue
+            raise error_cls(
+                f"Connection failed: {e}",
+                status_code=0,
+                response_body="",
+            ) from e
+        except httpx.TimeoutException as e:
+            raise error_cls(
+                f"Request timed out: {e}",
+                status_code=0,
+                response_body="",
+            ) from e
+
+        if response.status_code >= 500 and attempt < attempts:
+            _log_retry(
+                operation,
+                f"HTTP {response.status_code}",
+                attempt,
+                attempts,
+                base,
+                sleep,
+            )
+            continue
+
+        raise_for_status(response, operation, error_cls)
+        return response
+
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _log_retry(
+    operation: str,
+    reason: str,
+    attempt: int,
+    attempts: int,
+    base: float,
+    sleep: Callable[[float], None],
+) -> None:
+    """Log a retry in the timestamped click style and sleep the backoff."""
+    delay = compute_backoff(attempt, base=base)
+    click.echo(
+        f"[{_utc_timestamp()}]  {operation} got {reason}, retrying in "
+        f"{delay:.1f}s (attempt {attempt + 1} of {attempts})",
+        err=True,
+    )
+    sleep(delay)
 
 
 def parse_custom_headers(raw: str | None) -> dict[str, str]:

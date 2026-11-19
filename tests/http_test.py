@@ -9,7 +9,9 @@ import httpx
 import pytest
 
 from slan_cuan.http import (
+    MAX_BACKOFF_SECONDS,
     HttpApiError,
+    compute_backoff,
     create_ssl_context,
     parse_custom_headers,
     parse_json_dict,
@@ -308,3 +310,143 @@ class TestParseCustomHeaders:
         assert parse_custom_headers(raw) == {
             "{not valid json}": "still-a-header-value"
         }
+
+
+def _sequenced_client(responses: list[object]) -> tuple[httpx.Client, list[int]]:
+    """Client whose transport replays *responses* (status ints or exceptions)."""
+    calls: list[int] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        item = responses[min(len(calls), len(responses) - 1)]
+        calls.append(1)
+        if isinstance(item, Exception):
+            raise item
+        return httpx.Response(item, text=f"status {item}")
+
+    transport = httpx.MockTransport(handler)
+    return httpx.Client(
+        transport=transport, base_url="https://example.com"
+    ), calls
+
+
+class TestRequestRetry:
+    """Tests for request() retry-with-backoff on transient errors."""
+
+    def test_5xx_then_success(self) -> None:
+        """500, 500, 201 succeeds after two sleeps."""
+        client, calls = _sequenced_client([500, 500, 201])
+        sleeps: list[float] = []
+        response = request(
+            client,
+            "POST",
+            "/u",
+            "Upload",
+            _TestError,
+            retries=3,
+            sleep=sleeps.append,
+        )
+        assert response.status_code == 201
+        assert len(calls) == 3
+        assert len(sleeps) == 2
+        client.close()
+
+    @pytest.mark.parametrize("status", [404, 401])
+    def test_4xx_not_retried(self, status: int) -> None:
+        """Client errors raise immediately without retry."""
+        client, calls = _sequenced_client([status, 201])
+        sleeps: list[float] = []
+        with pytest.raises(_TestError) as exc_info:
+            request(client, "GET", "/u", "Fetch", _TestError, sleep=sleeps.append)
+        assert exc_info.value.status_code == status
+        assert len(calls) == 1
+        assert sleeps == []
+        client.close()
+
+    def test_5xx_exhausts_attempts(self) -> None:
+        """Persistent 500 raises the normal error after 3 attempts."""
+        client, calls = _sequenced_client([500])
+        sleeps: list[float] = []
+        with pytest.raises(_TestError) as exc_info:
+            request(
+                client,
+                "GET",
+                "/u",
+                "Fetch",
+                _TestError,
+                retries=3,
+                sleep=sleeps.append,
+            )
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.message == "Fetch failed (500): status 500"
+        assert len(calls) == 3
+        assert len(sleeps) == 2
+        client.close()
+
+    def test_connect_error_retried(self) -> None:
+        """ConnectError followed by success is retried."""
+        client, calls = _sequenced_client([httpx.ConnectError("refused"), 200])
+        sleeps: list[float] = []
+        response = request(
+            client, "GET", "/u", "Fetch", _TestError, sleep=sleeps.append
+        )
+        assert response.status_code == 200
+        assert len(calls) == 2
+        assert len(sleeps) == 1
+        client.close()
+
+    def test_timeout_not_retried(self) -> None:
+        """TimeoutException is not retried."""
+        client, calls = _sequenced_client([httpx.TimeoutException("slow"), 200])
+        sleeps: list[float] = []
+        with pytest.raises(_TestError, match="Request timed out"):
+            request(client, "GET", "/u", "Fetch", _TestError, sleep=sleeps.append)
+        assert len(calls) == 1
+        assert sleeps == []
+        client.close()
+
+    def test_files_rewound_on_retry(self) -> None:
+        """Multipart file objects are re-read from the start on retry."""
+        import io
+
+        bodies: list[bytes] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            bodies.append(req.read())
+            return httpx.Response(500 if len(bodies) == 1 else 201)
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(handler), base_url="https://example.com"
+        )
+        f = io.BytesIO(b"payload-bytes")
+        request(
+            client,
+            "POST",
+            "/u",
+            "Upload",
+            _TestError,
+            files={"file": ("a.jar", f, "application/octet-stream")},
+            sleep=lambda _s: None,
+        )
+        assert len(bodies) == 2
+        assert b"payload-bytes" in bodies[1]
+        client.close()
+
+    def test_backoff_exponential_without_jitter(self) -> None:
+        """Delays double per attempt."""
+        delays = [
+            compute_backoff(n, base=1.0, rand=lambda: 0.0) for n in (1, 2, 3)
+        ]
+        assert delays == [1.0, 2.0, 4.0]
+
+    def test_backoff_jitter_bounded(self) -> None:
+        """Jitter adds at most 25% of the delay."""
+        assert compute_backoff(2, base=1.0, rand=lambda: 1.0) == pytest.approx(
+            2.5
+        )
+
+    def test_backoff_respects_cap(self) -> None:
+        """No single sleep exceeds the cap, even with jitter."""
+        assert (
+            compute_backoff(10, base=1.0, rand=lambda: 1.0) == MAX_BACKOFF_SECONDS
+        )
+        assert compute_backoff(5, base=1.0, cap=10.0, rand=lambda: 0.0) == 10.0

@@ -279,6 +279,17 @@ slan-cuan --ca-cert /etc/ssl/certs/lan-ca.crt \
 
 Artifact uploads run concurrently using a thread pool sized by `--upload-workers` (default: 4). The repository modification (`modify_repository`) remains a single sequential call after all uploads complete. Set `--upload-workers 1` for sequential behavior.
 
+## Retry Behavior
+
+Every Pulp API call retries transient failures -- HTTP 5xx responses and connection errors -- with exponential backoff (about 1s, then 2s, capped at 30s per sleep, plus up to 25% random jitter). The run fails only after 3 consecutive failed attempts, with the same error as before. HTTP 4xx responses are never retried, and timeouts are not retried because the server may still be processing the request.
+
+These process-wide settings apply to every subcommand that talks to Pulp, so they are plain environment variables rather than per-subcommand flags:
+
+| Environment Variable | Default | Meaning |
+|---------------------|---------|---------|
+| `SLAN_CUAN_PULP_RETRIES` | `3` | Total attempts per request (initial + retries) |
+| `SLAN_CUAN_PULP_BACKOFF_SECONDS` | `1.0` | Base backoff, doubled per attempt |
+
 ## Dry-Run Behavior
 
 With `--dry-run`, loads the extract result and discovers artifacts but does not upload. Displays the authentication type, distribution name, Pulp URL, artifact count, coordinate count, and each artifact path that would be uploaded. When GitHub OSV publication is configured, it also reports the repository, branch, and number of records that would be pushed.
