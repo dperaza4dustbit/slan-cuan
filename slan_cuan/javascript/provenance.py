@@ -1,13 +1,14 @@
 """npm Tekton Chains SLSA provenance trust-policy predicates.
 
-Pure predicate-matching logic -- no I/O, no subprocess calls -- ported
-directly from ``npm-fetch-chains-provenance``'s ``jq`` filter. Builds the
-``select`` callable that ``slan_cuan.provenance.fetch_chains_provenance``
-calls with the decoded DSSE envelope candidates, returning the first
-candidate whose Chains builder, SLSA buildType, npm pipeline identity,
-trusted namespace, and subject digest all check out -- never raising on
-a missing/malformed field, only when no candidate satisfies every
-predicate.
+Pure predicate-matching logic -- no I/O, no subprocess calls.
+
+This module builds the ``select`` callable that
+``slan_cuan.provenance.fetch_chains_provenance`` runs over the decoded
+DSSE envelope candidates it fetches. ``select`` returns the first
+candidate that passes all five trust checks: Chains builder, SLSA
+buildType, npm pipeline identity, trusted namespace, and subject
+digest. A missing or malformed field just fails its check rather than
+raising; the only error raised is when no candidate passes all five.
 """
 
 from __future__ import annotations
@@ -180,6 +181,8 @@ def build_npm_provenance_selector(
 
     def select(candidates: list[dict]) -> dict:
         for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
             predicate = candidate.get("predicate")
             if not isinstance(predicate, dict):
                 continue

@@ -60,4 +60,4 @@ Ecosystem-specific commands are grouped under their own namespace instead of the
 
 | Subcommand | Tekton Task | Description |
 |------------|-------------|-------------|
-| `javascript extract` | Yes | Extract npm packages from the snapshot's component images |
+| `javascript extract` | `slan-cuan-javascript-extract` | Extract npm packages from the snapshot's component images |

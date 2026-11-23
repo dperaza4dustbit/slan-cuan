@@ -134,6 +134,27 @@ def test_selector_rejects_subject_digest_mismatch() -> None:
         select([candidate])
 
 
+@pytest.mark.parametrize(
+    "malformed_candidate", [["not", "a", "dict"], "a string", 1]
+)
+def test_selector_skips_non_dict_candidate_without_raising(
+    malformed_candidate: object,
+) -> None:
+    """A malformed (non-dict) candidate is skipped, not an AttributeError.
+
+    ``json.loads`` on a decoded DSSE payload can return any JSON type, not
+    just an object -- a non-dict candidate must fail its check like any
+    other malformed field, consistent with the module's "never raising on
+    a missing/malformed field" contract.
+    """
+    good_candidate = _v02_candidate()
+    select = build_npm_provenance_selector(IMAGE_DIGEST, TRUSTED_NAMESPACES)
+
+    result = select([malformed_candidate, good_candidate])
+
+    assert result is good_candidate
+
+
 def test_selector_picks_first_matching_of_several_candidates() -> None:
     """Returns the first matching candidate, not merely "a" match."""
     non_matching = _v02_candidate(builder_id="https://example.com/other")

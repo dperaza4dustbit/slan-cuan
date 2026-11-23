@@ -5,11 +5,6 @@ distribution files into a digest-namespaced directory under the
 payload root, and fetches/verifies the Tekton Chains SLSA provenance
 for each image against the npm trust policy
 (``slan_cuan.javascript.provenance``).
-
-Replaces ``npm-release-extract``'s extract + provenance-fetch steps;
-the old script's ``populate-release-notes`` step is not ported (see
-``tekton/tasks/javascript/slan-cuan-javascript-extract.yaml``'s
-description for why).
 """
 
 from __future__ import annotations
