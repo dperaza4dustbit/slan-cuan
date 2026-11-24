@@ -20,7 +20,7 @@ import click
 import mmh3
 from fath_cuan.ecosystems import _OSV_ECOSYSTEM, coordinate_from_purl
 from fath_cuan.index_builder import migrate_document
-from fath_cuan.workflow import process_osv, process_vex
+from fath_cuan.workflow import process_osv, process_vex, resolve_module_vulns
 
 from slan_cuan import oci
 from slan_cuan.models import (
@@ -82,18 +82,59 @@ def _index_for_sbom_and_vex(index_data: dict) -> dict | None:
 
 
 def _primary_module_index(build_index: dict) -> dict:
-    """Restrict a build-index to its primary (fixed) module.
+    """Restrict a build-index to its primary module.
 
-    A build-index lists every module the build produced, but only the
-    primary one carries the security fix: the OSV advisory has a single
-    ``affected`` entry for it. Other modules (parent POMs, build companions)
-    must not get VEX statements or an enriched SBOM claiming the fix, so
-    both use ``primaryPurl`` only.
+    Used for a build without placed fixes (a clean build), whose enriched
+    SBOM covers the primary module only. Builds with fixes use
+    :func:`_fixed_modules_index`.
     """
     primary = build_index.get("primaryPurl")
     if not primary:
         return build_index
     return {**build_index, "purls": [primary], "extraPurls": []}
+
+
+def _fixed_modules_index(
+    build_index: dict, module_vulns: dict[str, list[str]] | None
+) -> dict:
+    """Restrict a build-index to the modules that carry a fix (LWLP-5917).
+
+    *module_vulns* is fath-cuan's placement (``{group:artifact: [vuln IDs]}``).
+    Every module with a fix gets an enriched SBOM and a VEX; the others
+    (parent POMs, build companions, modules without a fix) must not claim a
+    fix and keep the PNC SBOM. A build without placed fixes (a clean build)
+    keeps the primary module only, as before.
+    """
+    if not module_vulns:
+        return _primary_module_index(build_index)
+    ecosystem = build_index.get("ecosystem", "")
+    upstream = (build_index.get("version") or {}).get("upstream", "")
+    fixed: list[str] = []
+    for purl in build_index.get("purls", []):
+        try:
+            name = coordinate_from_purl(
+                purl, ecosystem=ecosystem, upstream_version=upstream
+            ).name
+        except ValueError:
+            continue
+        if name in module_vulns:
+            fixed.append(purl)
+    if not fixed:
+        return _primary_module_index(build_index)
+    return {**build_index, "purls": fixed, "extraPurls": []}
+
+
+def _osv_repository_url(index_data: dict, explicit_url: str | None) -> str | None:
+    """Repository recorded in a Maven build's OSV advisories.
+
+    The same repository as the enriched SBOM purls (``_resolve_repo_url``):
+    predisclosure for a build with ``LW-`` IDs, remediated otherwise, or
+    ``--repository-url``. Non-Maven indexes keep fath-cuan's default.
+    """
+    ecosystem = str(index_data.get("ecosystem", "maven")).lower()
+    if ecosystem != "maven":
+        return None
+    return _resolve_repo_url(index_data.get("vulns", []), explicit_url or None)
 
 
 def _derive_advisory_id(index_data: dict) -> str | None:
@@ -505,8 +546,13 @@ def _generate_sboms_from_index(
     upstream_sboms_dir: Path | None = None,
     explicit_repo_url: str | None = None,
     sbom_components: dict[str, dict] | None = None,
+    module_vulns: dict[str, list[str]] | None = None,
 ) -> dict[str, str]:
     """Generate per-artifact enriched CycloneDX SBOMs from build-index data.
+
+    With *module_vulns* (fath-cuan's placement), each module's
+    ``pedigree.patches`` lists only the vulnerabilities placed on it
+    (LWLP-5917); otherwise every SBOM lists the build's vulnerabilities.
 
     Reads upstream SBOMs from *upstream_sboms_dir* (populated by the
     extract task), enriches them with pedigree data, and writes the
@@ -568,8 +614,13 @@ def _generate_sboms_from_index(
                 )
 
         repo_url = _resolve_repo_url(vulns, explicit_repo_url)
+        module_fixes = (
+            module_vulns.get(coord.name, [])
+            if module_vulns is not None
+            else vulns
+        )
         pedigree = _build_pedigree(
-            group_id, artifact_id, version, base_version, vulns
+            group_id, artifact_id, version, base_version, module_fixes
         )
 
         # Load upstream SBOM if available.
@@ -647,47 +698,76 @@ def _generate_vex_from_index(
     sbom_serial_numbers: dict[str, str],
     timestamp: str,
     sbom_components: dict[str, dict] | None = None,
+    module_vulns: dict[str, list[str]] | None = None,
 ) -> None:
-    """Generate the CycloneDX VEX document for the build's primary module.
+    """Write exactly one CycloneDX VEX document per module with a fix.
 
-    *sbom_components* (SBOM subjects keyed like *sbom_serial_numbers*) makes
-    each VEX ``metadata.component`` byte-identical to its SBOM's
-    ``components[0]`` identity, purl with ``repository_url`` and ``type``.
+    *module_vulns* (fath-cuan's placement) decides which vulnerabilities
+    each module's VEX declares (LWLP-5917). *sbom_components* (SBOM
+    subjects keyed like *sbom_serial_numbers*) makes each VEX
+    ``metadata.component`` byte-identical to its SBOM's ``components[0]``
+    identity, purl with ``repository_url`` and ``type``.
+
+    Filenames follow Sonatype v1.1 and use the module's own VEX datetime
+    (the build's datetime, one second later for each further module), so
+    the modules of one build never share a filename. An existing file is
+    never overwritten.
     """
     vex_result = process_vex(
         index_data,
         osidb_client=osidb_client,
         sbom_serial_numbers=sbom_serial_numbers,
         sbom_components=sbom_components,
+        module_vulns=module_vulns,
     )
 
-    # Exactly one VEX document per module (agreed Sonatype format): a single
-    # CVE -> <CVE-ID>-<datetime>.bom.json; several CVEs -> one
-    # <datetime>.bom.json holding all of them, never per-CVE files beside it
-    # (that would publish every statement twice). For an LW- build the
-    # LW- statement therefore always travels with its CVEs.
-    multi_vulns = (vex_result.multi_cve or {}).get("vulnerabilities") or []
-    if len(multi_vulns) >= 2:
-        filename = f"{timestamp}.bom.json"
-        document = vex_result.multi_cve
-    elif len(vex_result.per_cve) == 1:
-        cve_id, document = vex_result.per_cve[0]
-        filename = f"{cve_id}-{timestamp}.bom.json"
-    elif not vex_result.per_cve:
+    written = 0
+    # Names written by this run: two modules must never share a filename. A
+    # file left in the output directory by an earlier run is overwritten, as
+    # the OSV files are.
+    written_names: set[str] = set()
+    for module in vex_result.modules:
+        module_ts = module.timestamp or timestamp
+        # Exactly one VEX document per module (agreed Sonatype format): a
+        # single CVE -> <CVE-ID>-<datetime>.bom.json; several CVEs -> one
+        # <datetime>.bom.json holding all of them, never per-CVE files
+        # beside it (that would publish every statement twice). For an LW-
+        # build the LW- statement therefore always travels with its CVEs.
+        multi_vulns = (module.multi_cve or {}).get("vulnerabilities") or []
+        if len(multi_vulns) >= 2:
+            filename = f"{module_ts}.bom.json"
+            document = module.multi_cve
+        elif len(module.per_cve) == 1:
+            cve_id, document = module.per_cve[0]
+            filename = f"{cve_id}-{module_ts}.bom.json"
+        elif not module.per_cve:
+            continue
+        else:
+            raise click.ClickException(
+                f"Unexpected VEX result for {module.purl}: "
+                f"{len(module.per_cve)} per-CVE documents without a multi-CVE "
+                f"document; refusing to publish them as separate files."
+            )
+        path = output_dir / filename
+        if filename in written_names:
+            raise click.ClickException(
+                f"VEX file {filename} was already written by this run for "
+                f"another module; refusing to overwrite it with the VEX for "
+                f"{module.purl}."
+            )
+        written_names.add(filename)
+        statements = len((document or {}).get("vulnerabilities") or [])
+        click.echo(
+            f"Writing VEX for {module.purl} ({statements} statement(s)) to {path}"
+        )
+        with open(path, "w") as f:
+            json.dump(document, f, indent=2)
+        written += 1
+
+    if not written:
         click.echo("No VEX statements generated (nothing to publish).")
         return
-    else:
-        raise click.ClickException(
-            f"Unexpected VEX result: {len(vex_result.per_cve)} per-CVE "
-            f"documents without a multi-CVE document; refusing to publish "
-            f"them as separate files."
-        )
-    statements = len(document.get("vulnerabilities") or [])
-    path = output_dir / filename
-    click.echo(f"Writing VEX ({statements} statement(s)) to {path}")
-    with open(path, "w") as f:
-        json.dump(document, f, indent=2)
-    click.echo(f"VEX generation complete: 1 document, {statements} statement(s)")
+    click.echo(f"VEX generation complete: {written} document(s)")
 
 
 def _normalize_build_timestamp(created: object) -> str:
@@ -943,7 +1023,37 @@ def generate_security_metadata(
     if advisory_id:
         index_data["advisory_id"] = advisory_id
 
-    osv_records = process_osv(index_data, osidb_client=osidb_client)
+    # Place every vulnerability on the module(s) that fix it, once, and use
+    # that placement for the OSV advisories, the enriched SBOMs and the VEX:
+    # one advisory, one SBOM and one VEX per module that has a fix
+    # (LWLP-5917).
+    # None for a clean build; otherwise a dict that places every
+    # vulnerability (an unplaced one fails the run below).
+    module_vulns: dict[str, list[str]] | None = None
+    if vulns:
+        module_vulns = resolve_module_vulns(index_data, osidb_client=osidb_client)
+        for module, ids in module_vulns.items():
+            click.echo(f"Fixes in {module}: {', '.join(ids)}")
+        unplaced = sorted(
+            set(vulns) - {v for ids in module_vulns.values() for v in ids}
+        )
+        if unplaced:
+            # Fail here, with the IDs: no OSV or VEX would name them, and
+            # publish refuses a release whose OSV doesn't cover every GAV
+            # index vulnerability. Also covers "nothing placed at all".
+            raise click.ClickException(
+                f"Not placed on any module of this build (upstream names "
+                f"only modules it did not build): {', '.join(unplaced)}. "
+                f"No OSV or VEX would claim these fixes; check the build's "
+                f"vulnerability list."
+            )
+
+    osv_records = process_osv(
+        index_data,
+        osidb_client=osidb_client,
+        module_vulns=module_vulns,
+        repository_url=_osv_repository_url(index_data, repository_url),
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     for record in osv_records:
         osv_output_path = output_dir / f"{record['id']}.json"
@@ -951,11 +1061,11 @@ def generate_security_metadata(
         with open(osv_output_path, "w") as f:
             json.dump(record, f, indent=2)
 
-    # Generate the enriched SBOM (all builds) and VEX (gated on vulns — clean
-    # builds have no vulnerabilities to declare) from a build-index; a legacy
-    # gav-index is converted first. Both cover only the primary module: the
-    # fix is in the primary module, and the other modules of a multi-module
-    # build are dependents that must not claim it (they keep the PNC SBOM).
+    # Generate the enriched SBOMs (all builds) and VEX (gated on vulns —
+    # clean builds have no vulnerabilities to declare) from a build-index; a
+    # legacy gav-index is converted first. Both cover exactly the modules
+    # with a fix (the primary module for a clean build); the other modules
+    # of a multi-module build fix nothing and keep the PNC SBOM.
     sbom_serial_numbers: dict[str, str] = {}
     sbom_components: dict[str, dict] = {}
     build_index = _index_for_sbom_and_vex(index_data)
@@ -964,29 +1074,31 @@ def generate_security_metadata(
         # Normalize once and feed the same value to fath-cuan so the VEX
         # filename and its published/updated fields cannot diverge.
         ts_now = _normalize_build_timestamp(build_index.get("created"))
-        primary_index = _primary_module_index(build_index)
+        fixed_index = _fixed_modules_index(build_index, module_vulns)
 
         # Upstream SBOMs are captured by the extract task into
         # workdir/upstream-sboms/. This directory may not exist
         # (non-maven, or a deliverable without PNC SBOMs).
         upstream_sboms_dir = workdir / EXTRACT_UPSTREAM_SBOMS_DIRNAME
         sbom_serial_numbers = _generate_sboms_from_index(
-            primary_index,
+            fixed_index,
             output_dir,
             ts_now,
             upstream_sboms_dir=upstream_sboms_dir,
             explicit_repo_url=repository_url or None,
             sbom_components=sbom_components,
+            module_vulns=module_vulns,
         )
 
         if build_index.get("vulns"):
             _generate_vex_from_index(
-                {**primary_index, "created": ts_now},
+                {**fixed_index, "created": ts_now},
                 output_dir,
                 osidb_client,
                 sbom_serial_numbers,
                 ts_now,
                 sbom_components=sbom_components,
+                module_vulns=module_vulns,
             )
 
     # Save the updated extract result

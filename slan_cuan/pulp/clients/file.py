@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import click
@@ -32,6 +33,7 @@ class PulpFileClient(PulpClientBase):
         relative_path: str,
         sha256: str,
         repository_href: str | None = None,
+        labels: dict[str, str] | None = None,
     ) -> FileContentUnit:
         """Upload a file to the Pulp File content API.
 
@@ -41,6 +43,7 @@ class PulpFileClient(PulpClientBase):
             sha256: SHA-256 hex digest of the file.
             repository_href: Optional repository href to associate
                 the content unit with during creation.
+            labels: Optional labels to attach to the content unit.
 
         Returns:
             FileContentUnit with pulp_href and metadata.
@@ -64,6 +67,8 @@ class PulpFileClient(PulpClientBase):
         }
         if repository_href:
             data["repository"] = repository_href
+        if labels:
+            data["pulp_labels"] = json.dumps(labels)
 
         with file_path.open("rb") as f:
             files = {
@@ -121,6 +126,72 @@ class PulpFileClient(PulpClientBase):
         except (ValueError, KeyError) as e:
             raise PulpError(
                 f"Failed to parse file content unit response: {e}",
+                status_code=response.status_code,
+                response_body=response.text,
+            ) from e
+
+    def get_content(
+        self, repository_href: str, relative_path: str
+    ) -> dict[str, object] | None:
+        """Return the file content unit at *relative_path*, if present.
+
+        Looks in the repository's latest version. A File repository holds
+        one file per relative path, so uploading another file under an
+        existing path would replace it in the new version.
+
+        Returns:
+            The content unit (``sha256``, ``pulp_labels``, ...), or None
+            when the path is free.
+
+        Raises:
+            PulpError: If a lookup fails, returns invalid data, or the
+                domain is not set.
+
+        """
+        if self._config.domain is None:
+            raise PulpError(
+                "Domain is required for content lookup. Set --pulp-domain.",
+                status_code=0,
+                response_body="",
+            )
+        repo_response = self._request("GET", repository_href, "Repository lookup")
+        try:
+            repo_data = parse_json_dict(repo_response, "Repository", PulpError)
+            latest = repo_data.get("latest_version_href")
+        except (ValueError, KeyError) as e:
+            raise PulpError(
+                f"Failed to parse repository lookup response: {e}",
+                status_code=repo_response.status_code,
+                response_body=repo_response.text,
+            ) from e
+        if not latest:
+            return None
+
+        url = FILE_CONTENT_API_PATH_TEMPLATE.format(domain=self._config.domain)
+        response = self._request(
+            "GET",
+            url,
+            "File content lookup",
+            params={
+                "relative_path": relative_path,
+                "repository_version": str(latest),
+            },
+        )
+        try:
+            data = parse_json_dict(response, "File content", PulpError)
+            results = data.get("results", [])
+            if not isinstance(results, list):
+                raise ValueError("results is not a list")
+            for unit in results:
+                if unit.get("relative_path") == relative_path:
+                    return {
+                        "sha256": str(unit["sha256"]),
+                        "pulp_labels": dict(unit.get("pulp_labels") or {}),
+                    }
+            return None
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
+            raise PulpError(
+                f"Failed to parse file content lookup response: {e}",
                 status_code=response.status_code,
                 response_body=response.text,
             ) from e

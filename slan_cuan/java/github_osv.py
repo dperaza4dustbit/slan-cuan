@@ -21,6 +21,7 @@ that reads it from the subprocess environment.
 
 from __future__ import annotations
 
+import json
 import os
 import random
 import re
@@ -33,6 +34,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import click
+
+from slan_cuan.java.osv_update import same_osv_content, write_with_modified
 
 _GITHUB_HOST = "github.com"
 _DEFAULT_GIT_USER_NAME = "slan-cuan"
@@ -228,12 +231,47 @@ class GitHubOsvClient:
                     err=True,
                 )
 
-    def publish(self, files: Sequence[Path], commit_message: str) -> str | None:
+    @staticmethod
+    def _place_record(src: Path, dest: Path, modified_on_change: str) -> None:
+        """Copy one record, keeping an unchanged existing one (LWLP-5917)."""
+        if not dest.exists():
+            shutil.copy2(src, dest)
+            return
+        try:
+            new = json.loads(src.read_text())
+            old = json.loads(dest.read_text())
+            if not isinstance(new, dict) or not isinstance(old, dict):
+                raise ValueError("not a JSON object")
+        except (OSError, ValueError):
+            click.echo(
+                f"GitHub OSV: existing {dest.name} is unreadable; overwriting it",
+                err=True,
+            )
+            shutil.copy2(src, dest)
+            return
+        if same_osv_content(new, old):
+            click.echo(f"GitHub OSV: {src.name} is unchanged; keeping it")
+            return
+        click.echo(
+            f"GitHub OSV: updating {src.name} (content changed; "
+            f"modified -> {modified_on_change})"
+        )
+        write_with_modified(new, modified_on_change, dest)
+
+    def publish(
+        self,
+        files: Sequence[Path],
+        commit_message: str,
+        modified_on_change: str | None = None,
+    ) -> str | None:
         """Publish OSV records to the repository.
 
         Clones the repository shallowly, copies ``files`` into the configured
-        path, and commits and pushes them as a single commit. Records with a
-        name already present are overwritten (idempotent re-publication). On a
+        path, and commits and pushes them as a single commit. With
+        *modified_on_change*, a record whose name is already present is kept
+        when only ``modified`` differs, and otherwise written with
+        ``modified`` set to *modified_on_change* (re-releases; LWLP-5917).
+        Without it, existing records are overwritten. On a
         non-fast-forward push rejection -- a concurrent release landed a commit
         first -- the whole clone/copy/commit/push is retried against a fresh
         clone, with exponential backoff and jitter between attempts.
@@ -241,6 +279,8 @@ class GitHubOsvClient:
         Args:
             files: OSV JSON files to publish.
             commit_message: Message for the single commit.
+            modified_on_change: Publication time for records whose content
+                changed.
 
         Returns:
             The pushed commit SHA, or ``None`` when the records introduced no
@@ -262,7 +302,7 @@ class GitHubOsvClient:
                 clone_dir = tmp_path / f"repo-{attempt}"
                 try:
                     return self._publish_once(
-                        files, commit_message, clone_dir, env
+                        files, commit_message, clone_dir, env, modified_on_change
                     )
                 except GitHubOsvError as e:
                     last_attempt = attempt == self.max_attempts - 1
@@ -287,6 +327,7 @@ class GitHubOsvClient:
         commit_message: str,
         clone_dir: Path,
         env: dict[str, str],
+        modified_on_change: str | None = None,
     ) -> str | None:
         """Perform a single clone/copy/commit/push cycle.
 
@@ -312,9 +353,13 @@ class GitHubOsvClient:
 
         dest_dir = clone_dir / self.path if self.path else clone_dir
         dest_dir.mkdir(parents=True, exist_ok=True)
-        self._warn_on_content_changes(files, dest_dir)
-        for src in files:
-            shutil.copy2(src, dest_dir / src.name)
+        if modified_on_change is None:
+            self._warn_on_content_changes(files, dest_dir)
+            for src in files:
+                shutil.copy2(src, dest_dir / src.name)
+        else:
+            for src in files:
+                self._place_record(src, dest_dir / src.name, modified_on_change)
 
         self._run(["git", "add", "-A"], cwd=clone_dir)
 

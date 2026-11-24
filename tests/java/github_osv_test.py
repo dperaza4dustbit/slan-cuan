@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -329,3 +330,127 @@ def test_redaction_is_noop_with_empty_token() -> None:
     client = GitHubOsvClient("owner/repo", "")
     assert client._display(["git", "push", "origin"]) == "git push origin"
     assert client._redact("fatal: nope") == "fatal: nope"
+
+
+# ---------------------------------------------------------------------------
+# LWLP-5917: re-releases keep unchanged records and bump modified on change
+# ---------------------------------------------------------------------------
+
+_ADV = "RHLW-2026-33400e52ea4f277c.json"
+
+
+def _origin_record(tmp_path: Path, origin: Path, name: str) -> dict:
+    checkout = tmp_path / "verify-record"
+    subprocess.run(
+        ["git", "clone", str(origin), str(checkout)],
+        check=True,
+        capture_output=True,
+    )
+    return json.loads((checkout / name).read_text())
+
+
+def _advisory(
+    path: Path, upstream: list[str], modified: str = "2026-11-13T18:59:33Z"
+) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "id": "RHLW-2026-33400e52ea4f277c",
+                "published": "2026-11-13T18:59:33Z",
+                "modified": modified,
+                "upstream": upstream,
+            },
+            indent=2,
+        )
+    )
+    return path
+
+
+@pytest.mark.parametrize("existing", ["[]", "null", "not json"])
+def test_place_record_overwrites_an_existing_file_that_is_not_an_object(
+    tmp_path: Path, existing: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An existing record that isn't a JSON object is replaced, no traceback."""
+    src, dest = tmp_path / "new.json", tmp_path / "old.json"
+    _advisory(src, ["CVE-2026-19880"])
+    dest.write_text(existing)
+
+    GitHubOsvClient._place_record(src, dest, "2026-11-21T12:00:00Z")
+
+    assert dest.read_text() == src.read_text()
+    assert "is unreadable; overwriting it" in capsys.readouterr().err
+
+
+def test_republish_keeps_unchanged_record(
+    origin_and_client: tuple[Path, GitHubOsvClient],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Same content (only modified may differ): nothing is committed."""
+    origin, client = origin_and_client
+    rec = tmp_path / _ADV
+    with patch.object(
+        GitHubOsvClient,
+        "_authenticated_url",
+        new=property(lambda self: str(origin)),
+    ):
+        _advisory(rec, ["CVE-2026-19880"])
+        assert client.publish(
+            [rec], "add", modified_on_change="2026-11-20T12:00:00Z"
+        )
+        _advisory(rec, ["CVE-2026-19880"], modified="2026-11-14T00:00:00Z")
+        assert (
+            client.publish(
+                [rec], "re-run", modified_on_change="2026-11-21T12:00:00Z"
+            )
+            is None
+        )
+
+    assert (
+        _origin_record(tmp_path, origin, _ADV)["modified"]
+        == "2026-11-13T18:59:33Z"
+    )
+    assert f"{_ADV} is unchanged; keeping it" in capsys.readouterr().out
+
+
+def test_republish_changed_record_bumps_modified(
+    origin_and_client: tuple[Path, GitHubOsvClient], tmp_path: Path
+) -> None:
+    """Changed content is published with modified = the publication time."""
+    origin, client = origin_and_client
+    rec = tmp_path / _ADV
+    with patch.object(
+        GitHubOsvClient,
+        "_authenticated_url",
+        new=property(lambda self: str(origin)),
+    ):
+        _advisory(rec, ["CVE-2024-12798", "CVE-2026-19880"])
+        client.publish([rec], "add", modified_on_change="2026-11-20T12:00:00Z")
+        _advisory(rec, ["CVE-2026-19880"])
+        assert client.publish(
+            [rec], "correct", modified_on_change="2026-11-21T12:00:00Z"
+        )
+
+    published = _origin_record(tmp_path, origin, _ADV)
+    assert published["upstream"] == ["CVE-2026-19880"]
+    assert published["modified"] == "2026-11-21T12:00:00Z"
+    assert published["published"] == "2026-11-13T18:59:33Z"
+
+
+def test_first_publication_keeps_build_modified(
+    origin_and_client: tuple[Path, GitHubOsvClient], tmp_path: Path
+) -> None:
+    """A new record is published as generated (modified = build time)."""
+    origin, client = origin_and_client
+    rec = _advisory(tmp_path / _ADV, ["CVE-2026-19880"])
+    with patch.object(
+        GitHubOsvClient,
+        "_authenticated_url",
+        new=property(lambda self: str(origin)),
+    ):
+        client.publish([rec], "add", modified_on_change="2026-11-20T12:00:00Z")
+
+    assert (
+        _origin_record(tmp_path, origin, _ADV)["modified"]
+        == "2026-11-13T18:59:33Z"
+    )

@@ -34,3 +34,21 @@ sys.modules.setdefault("fath_cuan.osidb", MagicMock())
 def _no_http_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     """Disable real backoff sleeps in slan_cuan.http retries."""
     monkeypatch.setattr("slan_cuan.http._sleep", lambda _s: None)
+
+
+@pytest.fixture(autouse=True)
+def _clear_fath_cuan_caches():
+    """Start each test with empty fath-cuan lookup caches.
+
+    fath-cuan > 0.10 caches osv.dev/NVD lookups per process (LWLP-6012);
+    tests that mock the same IDs differently must not see each other's
+    answers. A no-op with fath-cuan versions without the caches.
+    """
+    from fath_cuan.converters import osv as fath_osv
+
+    clear = getattr(fath_osv, "clear_caches", None)
+    if clear is not None:
+        clear()
+    yield
+    if clear is not None:
+        clear()

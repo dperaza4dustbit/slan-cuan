@@ -553,6 +553,96 @@ class TestPulpFileClient:
         )
         return client
 
+    _REPO = "/api/v3/repositories/file/file/vexuuid/"
+    _VERSION = "/api/v3/repositories/file/file/vexuuid/versions/7/"
+
+    def _vex_lookup_handler(
+        self, results: list[dict[str, object]], latest: str | None = _VERSION
+    ) -> tuple[Callable[[httpx.Request], httpx.Response], list[httpx.Request]]:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            if request.url.path.endswith(self._REPO):
+                return httpx.Response(200, json={"latest_version_href": latest})
+            return httpx.Response(200, json={"results": results})
+
+        return handler, seen
+
+    def test_get_content_existing_path(self) -> None:
+        """The file at the path in the latest version is reported."""
+        name = "CVE-2024-1-2026-11-13T18:59:33Z.bom.json"
+        handler, seen = self._vex_lookup_handler(
+            [
+                {
+                    "relative_path": name,
+                    "sha256": "ab" * 32,
+                    "pulp_labels": {"source_image": "quay.io/x@sha256:1"},
+                }
+            ]
+        )
+        client = self._client_with(handler)
+
+        assert client.get_content(self._REPO, name) == {
+            "sha256": "ab" * 32,
+            "pulp_labels": {"source_image": "quay.io/x@sha256:1"},
+        }
+        query = seen[1].url.params
+        assert query["relative_path"] == name
+        assert query["repository_version"] == self._VERSION
+
+    def test_get_content_free_path(self) -> None:
+        """No file at the path: None."""
+        handler, _ = self._vex_lookup_handler([])
+        client = self._client_with(handler)
+
+        assert client.get_content(self._REPO, "x.bom.json") is None
+
+    def test_get_content_empty_repository(self) -> None:
+        """A repository without content versions has no files."""
+        handler, seen = self._vex_lookup_handler([], latest=None)
+        client = self._client_with(handler)
+
+        assert client.get_content(self._REPO, "x.bom.json") is None
+        assert len(seen) == 1
+
+    def test_get_content_requires_domain(self) -> None:
+        """The content API is domain-scoped."""
+        config = PulpConfig(
+            base_url="https://pulp.example.com",
+            verify_ssl=True,
+            username="testuser",
+            password="testpass",
+        )
+        client = PulpFileClient(config, "test-dist")
+        with pytest.raises(PulpError, match="Domain is required"):
+            client.get_content(self._REPO, "x.bom.json")
+
+    def test_upload_content_sends_labels(self, tmp_path: Path) -> None:
+        """Labels are sent as the pulp_labels JSON field."""
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(
+                200,
+                json={
+                    "pulp_href": "/api/v3/content/file/files/abc/",
+                    "relative_path": "v.bom.json",
+                    "sha256": "00" * 32,
+                },
+            )
+
+        path = tmp_path / "v.bom.json"
+        path.write_text("{}")
+        client = self._client_with(handler)
+        client.upload_content(
+            path, "v.bom.json", "00" * 32, labels={"source_image": "img@sha256:1"}
+        )
+
+        assert b'name="pulp_labels"' in seen[0].content
+        assert b'{"source_image": "img@sha256:1"}' in seen[0].content
+
     def test_get_distribution_base_path_found(self) -> None:
         """Lookup by name returns the distribution base_path."""
         seen: list[httpx.Request] = []

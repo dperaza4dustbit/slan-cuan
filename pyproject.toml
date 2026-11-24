@@ -31,7 +31,7 @@ classifiers = [
 dependencies = [
     "click >= 8.1",
     "defusedxml >= 0.7.0",
-    "fath-cuan >= 0.9.1",
+    "fath-cuan >= 0.10.0",
     "httpx >= 0.27",
     "mmh3",
     "packageurl-python",
