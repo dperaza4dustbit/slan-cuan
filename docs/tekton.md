@@ -190,6 +190,7 @@ parameter. See [Direct Signing](sign.md#direct-signing).
 | `PULP_PASSWORD` | `SLAN_CUAN_PUBLISH_PULP_PASSWORD` | `--pulp-password` |
 | `PULP_CLIENT_CERT` | `SLAN_CUAN_PUBLISH_PULP_CLIENT_CERT` | `--pulp-client-cert` |
 | `PULP_CLIENT_KEY` | `SLAN_CUAN_PUBLISH_PULP_CLIENT_KEY` | `--pulp-client-key` |
+| `SKIP_ASSOCIATE` | `SLAN_CUAN_PUBLISH_SKIP_ASSOCIATE` | `--skip-associate` |
 
 **Results:**
 - `ARTIFACTS_UPLOADED` -- Count of successfully uploaded artifacts

@@ -1064,8 +1064,15 @@ def _upload_to_pulp(
     file_skipped: int,
     upload_workers: int,
     repository_href: str | None = None,
+    skip_associate: bool = False,
 ) -> tuple[PublishResult, int, int, int, int]:
-    """Upload artifacts to Pulp."""
+    """Upload artifacts to Pulp.
+
+    With *skip_associate* the Maven content is uploaded and labelled as usual
+    but not added to the repository (no ``add_and_remove`` modify), so a later
+    batch step can associate it (LWLP-6026). OSV/VEX file records are
+    published as usual.
+    """
     uploaded = 0
     skipped = 0
     file_uploaded = 0
@@ -1124,7 +1131,13 @@ def _upload_to_pulp(
                 content_unit_hrefs.append(content_unit.pulp_href)
                 uploaded += 1
 
-        if content_unit_hrefs:
+        if content_unit_hrefs and skip_associate:
+            click.echo(
+                f"Skipping association: {len(content_unit_hrefs)} content "
+                "unit(s) uploaded but not added to the repository "
+                "(--skip-associate)"
+            )
+        elif content_unit_hrefs:
             if repository_href is None:
                 click.echo(f"Resolving repository: {pulp_repository}")
                 repository_href = client.resolve_repository(pulp_repository)
@@ -1330,6 +1343,17 @@ def _print_verbose_artifact_info(
     ),
 )
 @click.option(
+    "--skip-associate",
+    is_flag=True,
+    default=False,
+    show_default=True,
+    help=(
+        "Upload and label the Maven content but don't add it to the "
+        "repository; a later batch step associates it. OSV/VEX records "
+        "are still published."
+    ),
+)
+@click.option(
     "--pulp-file-repository",
     envvar="SLAN_CUAN_PUBLISH_PULP_FILE_REPOSITORY",
     type=str,
@@ -1427,6 +1451,7 @@ def publish(
     pulp_domain: str,
     upload_workers: int,
     require_supply_chain_metadata: bool,
+    skip_associate: bool,
     pulp_file_repository: str | None,
     pulp_vex_repository: str | None,
     pulp_task_timeout: float,
@@ -1702,6 +1727,7 @@ def publish(
             file_skipped=file_skipped,
             upload_workers=upload_workers,
             repository_href=repository_href,
+            skip_associate=skip_associate,
         )
 
         github_osv_uploaded = 0

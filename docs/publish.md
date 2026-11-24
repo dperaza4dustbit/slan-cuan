@@ -99,6 +99,7 @@ Labels are also:
 | `--pulp-client-cert` | path | When `cert` | -- | Client certificate for entitlement cert auth |
 | `--pulp-client-key` | path | When `cert` | -- | Client key for entitlement cert auth |
 | `--upload-workers` | integer | No | `4` | Number of concurrent upload threads |
+| `--skip-associate` | flag | No | off | Upload and label content but skip the repository modify (see Skip Association) |
 | `--pulp-file-repository` | string | When OSV present | -- | Pulp File repository name for OSV upload |
 | `--pulp-vex-repository` | string | When VEX present | -- | Pulp File repository name for VEX upload |
 | `--github-osv-repo` | string | No | -- | GitHub repo (`owner/name`) to also publish OSV records to |
@@ -125,6 +126,7 @@ See [CLI Reference](cli.md#environment-variables) for naming conventions.
 | `--pulp-client-cert` | `SLAN_CUAN_PUBLISH_PULP_CLIENT_CERT` |
 | `--pulp-client-key` | `SLAN_CUAN_PUBLISH_PULP_CLIENT_KEY` |
 | `--upload-workers` | `SLAN_CUAN_PUBLISH_UPLOAD_WORKERS` |
+| `--skip-associate` | `SLAN_CUAN_PUBLISH_SKIP_ASSOCIATE` |
 | `--pulp-file-repository` | `SLAN_CUAN_PUBLISH_PULP_FILE_REPOSITORY` |
 | `--pulp-vex-repository` | `SLAN_CUAN_PUBLISH_PULP_VEX_REPOSITORY` |
 | `--github-osv-repo` | `SLAN_CUAN_PUBLISH_GITHUB_OSV_REPO` |
@@ -278,6 +280,15 @@ slan-cuan --ca-cert /etc/ssl/certs/lan-ca.crt \
 ## Concurrent Uploads
 
 Artifact uploads run concurrently using a thread pool sized by `--upload-workers` (default: 4). The repository modification (`modify_repository`) remains a single sequential call after all uploads complete. Set `--upload-workers 1` for sequential behavior.
+
+## Skip Association
+
+`--skip-associate` (LWLP-6026) keeps the uploads and `source_image` labels but skips the repository modify (`add_and_remove`):
+
+- The content stays unassociated for a later batch association.
+- `publish-result.json` lists every `content_unit_hrefs` entry, with `repository_version: null`.
+- OSV/VEX file records are published as usual.
+- Off by default; behaviour is unchanged unless set.
 
 ## Retry Behavior
 

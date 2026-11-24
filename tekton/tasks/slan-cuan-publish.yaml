@@ -77,6 +77,13 @@ spec:
       description: When active the pipeline will fail if the SBOM + Provenance is not present in the build artifact.
       type: string
       default: "false"
+    - name: SKIP_ASSOCIATE
+      description: >-
+        When "true", upload and label the Maven content but don't add it to the
+        repository, so a later batch step can associate it. OSV/VEX records are
+        still published.
+      type: string
+      default: "false"
     - name: PULP_FILE_REPOSITORY
       description: Pulp File repository name for OSV upload.
       type: string
@@ -274,6 +281,8 @@ spec:
           value: $(params.PULP_AUTH_TYPE)
         - name: SLAN_CUAN_PUBLISH_REQUIRE_SUPPLY_CHAIN_METADATA
           value: $(params.REQUIRE_SUPPLY_CHAIN_METADATA)
+        - name: SLAN_CUAN_PUBLISH_SKIP_ASSOCIATE
+          value: $(params.SKIP_ASSOCIATE)
         - name: SLAN_CUAN_PUBLISH_PULP_FILE_REPOSITORY
           value: $(params.PULP_FILE_REPOSITORY)
         - name: SLAN_CUAN_PUBLISH_PULP_VEX_REPOSITORY

@@ -350,6 +350,80 @@ def test_publish_missing_extract_result(tmp_path: Path) -> None:
     assert "Extract result not found" in result.output
 
 
+_BASIC_PUBLISH_ARGS = [
+    "publish",
+    "--pulp-url",
+    "https://pulp.example.com",
+    "--pulp-repository",
+    "test-repo",
+    "--pulp-domain",
+    "lightwell",
+    "--pulp-username",
+    "testuser",
+    "--pulp-password",
+    "testpass",
+]
+
+
+@patch("slan_cuan.java.publish.PulpMavenClient")
+def test_publish_skip_associate_uploads_without_modify(
+    mock_client_cls: Mock, tmp_path: Path
+) -> None:
+    """--skip-associate uploads and labels content but never modifies the repo."""
+    artifact_dir = create_test_artifact_dir(tmp_path)
+    mock_client = _make_ctx_mock()
+    mock_client_cls.return_value = mock_client
+    _setup_client_mock(mock_client)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            *_BASIC_PUBLISH_ARGS,
+            "--artifact-dir",
+            str(artifact_dir),
+            "--skip-associate",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert mock_client.upload_content.call_count == 6
+    mock_client.modify_repository.assert_not_called()
+    mock_client.resolve_repository.assert_not_called()
+    assert (
+        "Skipping association: 6 content unit(s) uploaded but not added to the "
+        "repository (--skip-associate)"
+    ) in result.output
+    with (artifact_dir / "publish-result.json").open() as f:
+        publish_result = json.load(f)
+    assert publish_result["repository_version"] is None
+    assert len(publish_result["content_unit_hrefs"]) == 6
+    assert publish_result["pulp_labels"]["source_image"]
+
+
+@pytest.mark.parametrize(
+    ("env_value", "modify_calls"),
+    [("true", 0), ("false", 1)],
+)
+@patch("slan_cuan.java.publish.PulpMavenClient")
+def test_publish_skip_associate_env_var(
+    mock_client_cls: Mock, tmp_path: Path, env_value: str, modify_calls: int
+) -> None:
+    """SLAN_CUAN_PUBLISH_SKIP_ASSOCIATE turns the mode on only for "true"."""
+    artifact_dir = create_test_artifact_dir(tmp_path)
+    mock_client = _make_ctx_mock()
+    mock_client_cls.return_value = mock_client
+    _setup_client_mock(mock_client)
+
+    result = CliRunner().invoke(
+        main,
+        [*_BASIC_PUBLISH_ARGS, "--artifact-dir", str(artifact_dir)],
+        env={"SLAN_CUAN_PUBLISH_SKIP_ASSOCIATE": env_value},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert mock_client.modify_repository.call_count == modify_calls
+
+
 @patch("slan_cuan.java.publish.PulpMavenClient")
 def test_publish_successful_upload(mock_client_cls: Mock, tmp_path: Path) -> None:
     """Mock client, verify upload_content and modify_repository."""
@@ -2818,6 +2892,67 @@ def test_publish_uploads_vex_to_separate_repository(
     mock_vex.get_repository_autopublish.assert_called_once_with("/vex-repo/")
     assert mock_file_cls.call_args_list[0].args[1] == "osv/java/remediated"
     assert mock_file_cls.call_args_list[1].args[1] == "vex-java-backport"
+
+
+@patch("slan_cuan.java.publish.PulpFileClient")
+@patch("slan_cuan.java.publish.PulpMavenClient")
+def test_publish_skip_associate_still_publishes_osv_and_vex(
+    mock_maven_cls: Mock,
+    mock_file_cls: Mock,
+    tmp_path: Path,
+) -> None:
+    """--skip-associate skips only the Maven modify; OSV/VEX still get published.
+
+    File records upload straight into their (autopublish) repository, so the
+    check is that each upload still targets the repository href.
+    """
+    artifact_dir = create_test_artifact_dir(
+        tmp_path, include_security_metadata=True
+    )
+    vex_path = _add_vex_document(artifact_dir)
+
+    mock_maven = _make_ctx_mock()
+    mock_maven_cls.return_value = mock_maven
+    _setup_client_mock(mock_maven)
+
+    mock_osv = _make_ctx_mock()
+    mock_vex = _make_ctx_mock()
+    _setup_file_client(mock_osv)
+    _setup_file_client(mock_vex)
+    mock_osv.resolve_repository.return_value = "/osv-repo/"
+    mock_vex.resolve_repository.return_value = "/vex-repo/"
+    mock_osv.get_distribution_repository.return_value = "/osv-repo/"
+    mock_vex.get_distribution_repository.return_value = "/vex-repo/"
+    mock_file_cls.side_effect = [mock_osv, mock_vex]
+
+    result = CliRunner().invoke(
+        main,
+        [
+            *_BASIC_PUBLISH_ARGS,
+            "--artifact-dir",
+            str(artifact_dir),
+            "--pulp-file-repository",
+            "osv/java/remediated",
+            "--pulp-vex-repository",
+            "vex-java-backport",
+            "--skip-associate",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    mock_maven.modify_repository.assert_not_called()
+    assert "Skipping association:" in result.output
+    assert "Security metadata: 1 file(s) uploaded" in result.output
+    assert "VEX metadata: 1 file(s) uploaded" in result.output
+    assert mock_osv.upload_content.call_args.kwargs["repository_href"] == (
+        "/osv-repo/"
+    )
+    assert mock_vex.upload_content.call_args.kwargs["relative_path"] == (
+        vex_path.name
+    )
+    assert mock_vex.upload_content.call_args.kwargs["repository_href"] == (
+        "/vex-repo/"
+    )
 
 
 @patch("slan_cuan.java.publish.PulpFileClient")
