@@ -21,6 +21,11 @@
 #                        Pulp labels tl.oci_registry_base /
 #                        tl.attestation_oci_digest /
 #                        tl.attestation_predicate_type are set (also on skip).
+#                        The same prefix is used to publish a CycloneDX referrer
+#                        from the snapshot image (images.txt). Labels
+#                        tl.sbom_oci_digest / tl.sbom_artifact_type are set when
+#                        a referrer matches the package. No referrer skips the
+#                        SBOM.
 #   REQUIRE_ATTESTATIONS If true, fail when prefix is set but .att is missing
 #   ALLOW_CONTENT_REPLACE If true, same name@version with different sha256 is
 #                        replaced (remove from repo → destroy holding versions →
@@ -524,6 +529,21 @@ publish_attestation_if_present() {
     npm-attestation-publish "${file}" "${content_href}" "${name}" "${version}"
 }
 
+publish_sbom_if_present() {
+  local file="$1"
+  local content_href="$2"
+  local name="$3"
+  local version="$4"
+  local prefix="${SBOM_IMAGE_PREFIX:-${ATTESTATION_IMAGE_PREFIX:-${COMPLIANCE_IMAGE_PREFIX:-}}}"
+
+  if [[ -z "${prefix}" ]]; then
+    return 0
+  fi
+  SBOM_IMAGE_PREFIX="${prefix}" \
+    SBOM_CACHE_DIR="${SBOM_CACHE_DIR:-${FILES_DIR}/.sbom-cache}" \
+    npm-sbom-publish "${file}" "${content_href}" "${name}" "${version}"
+}
+
 uploaded=()
 skipped_existing=()
 failed=()
@@ -590,6 +610,11 @@ while IFS= read -r -d '' file; do
       fi
     fi
     if ! publish_attestation_if_present \
+      "${file}" "${EXISTING_CONTENT_HREF}" "${name}" "${version}"; then
+      failed+=("${file}")
+      continue
+    fi
+    if ! publish_sbom_if_present \
       "${file}" "${EXISTING_CONTENT_HREF}" "${name}" "${version}"; then
       failed+=("${file}")
       continue
@@ -669,6 +694,11 @@ while IFS= read -r -d '' file; do
   fi
   echo "Uploaded ${file} -> ${content_href}"
   if ! publish_attestation_if_present \
+    "${file}" "${content_href}" "${name}" "${version}"; then
+    failed+=("${file}")
+    continue
+  fi
+  if ! publish_sbom_if_present \
     "${file}" "${content_href}" "${name}" "${version}"; then
     failed+=("${file}")
     continue

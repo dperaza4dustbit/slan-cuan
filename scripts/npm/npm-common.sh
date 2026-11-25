@@ -42,20 +42,21 @@ normalize_oci_registry_base() {
 # this constant (override with ATTESTATION_PREDICATE_TYPE in the environment).
 DEFAULT_ATTESTATION_PREDICATE_TYPE="https://slsa.dev/provenance/v1"
 
-# Mutable Quay tag for a package attestation OCI (writer-only; not a Pulp label).
+# Mutable Quay tag for a package OCI (writer-only; not a Pulp label).
 # Scoped names replace "/" with "--" so @a/b and unscoped a-b cannot collide.
 # Remaining characters outside the OCI tag charset ([A-Za-z0-9._-], max 128,
 # first char [A-Za-z0-9_]) are replaced with "-" so npm build metadata like
-# 2.1.0+build.42 does not break oras push.
-attestation_oci_tag() {
+# 2.1.0+build.42 does not break oras push. suffix is "att" or "sbom".
+_oci_package_tag() {
   local name="$1"
   local version="$2"
+  local suffix="$3"
   local raw
   if [[ "${name}" == @* ]]; then
     local tag="${name#@}"
-    raw="${tag//\//--}-${version}-att"
+    raw="${tag//\//--}-${version}-${suffix}"
   else
-    raw="${name}-${version}-att"
+    raw="${name}-${version}-${suffix}"
   fi
   local sanitized
   sanitized="$(printf '%s' "${raw}" | sed 's/[^A-Za-z0-9._-]/-/g')"
@@ -66,6 +67,14 @@ attestation_oci_tag() {
     sanitized="${sanitized:0:128}"
   fi
   printf '%s' "${sanitized}"
+}
+
+attestation_oci_tag() {
+  _oci_package_tag "$1" "$2" "att"
+}
+
+sbom_oci_tag() {
+  _oci_package_tag "$1" "$2" "sbom"
 }
 
 # Normalize an OCI/content digest to lowercase sha256:<64 hex>.

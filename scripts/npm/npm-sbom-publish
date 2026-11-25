@@ -1,0 +1,347 @@
+#!/usr/bin/env bash
+# Push a CycloneDX SBOM referrer to Quay and set Pulp labels.
+#
+# The build attaches application/vnd.cyclonedx+json to the snapshot image.
+# Extract records that image in images.txt. This script discovers the referrer
+# whose metadata.component matches the package, pushes it to the compliance
+# Quay prefix, and records where it landed.
+#
+# Public Pulp label contract (client builds {base}@{digest}):
+#   tl.oci_registry_base
+#   tl.sbom_oci_digest
+#   tl.sbom_artifact_type
+#
+# A snapshot with no matching referrer is skipped. Discover or pull failures
+# fail the package.
+#
+# Env:
+#   SBOM_IMAGE_PREFIX          Quay repo for the SBOM OCI (required)
+#                              falls back to ATTESTATION_IMAGE_PREFIX then
+#                              COMPLIANCE_IMAGE_PREFIX
+#   IMAGES_TXT                 Digest-pinned snapshot images. Default:
+#                              $(dirname "$FILES_DIR")/images.txt
+#   SBOM_CACHE_DIR             Reused across packages in one upload
+#   OCI_REGISTRY_BASE          Value for tl.oci_registry_base (default: strip
+#                              tag/digest from SBOM_IMAGE_PREFIX)
+#   SBOM_ARTIFACT_TYPE         oras --artifact-type
+#                              (default application/vnd.cyclonedx+json)
+#   ORAS_OPTIONS               Extra oras flags for the push
+#   PULP_BASE_URL              Required for set_label
+#
+# Usage:
+#   npm-sbom-publish <tgz-path> <content-href> <name> <version>
+set -euo pipefail
+
+_SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+if [[ -f "${_SCRIPT_DIR}/npm-common.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${_SCRIPT_DIR}/npm-common.sh"
+else
+  # shellcheck disable=SC1091
+  source "$(command -v npm-common.sh)"
+fi
+
+TGZ_PATH="${1:?tgz path required}"
+CONTENT_HREF="${2:?content href required}"
+PKG_NAME="${3:?package name required}"
+PKG_VERSION="${4:?package version required}"
+
+SBOM_IMAGE_PREFIX="${SBOM_IMAGE_PREFIX:-${ATTESTATION_IMAGE_PREFIX:-${COMPLIANCE_IMAGE_PREFIX:-}}}"
+if [[ -z "${SBOM_IMAGE_PREFIX}" ]]; then
+  echo "ERROR: SBOM_IMAGE_PREFIX (or COMPLIANCE_IMAGE_PREFIX) required" >&2
+  exit 1
+fi
+
+SBOM_ARTIFACT_TYPE="${SBOM_ARTIFACT_TYPE:-application/vnd.cyclonedx+json}"
+CURL_RETRY="${CURL_RETRY:-3}"
+CURL_MAX_TIME_QUERY_SECONDS="${CURL_MAX_TIME_QUERY_SECONDS:-30}"
+MAX_SBOM_BYTES="${MAX_SBOM_BYTES:-16777216}"
+OCI_REGISTRY_BASE_LABEL="tl.oci_registry_base"
+SBOM_DIGEST_LABEL="tl.sbom_oci_digest"
+SBOM_ARTIFACT_TYPE_LABEL="tl.sbom_artifact_type"
+ORAS_DIGEST_LINE_RE='^Digest:[[:space:]]*(sha256:[a-f0-9]{64})[[:space:]]*$'
+
+if [[ -z "${IMAGES_TXT:-}" && -n "${FILES_DIR:-}" ]]; then
+  IMAGES_TXT="$(dirname "${FILES_DIR}")/images.txt"
+fi
+
+if [[ -z "${IMAGES_TXT:-}" || ! -s "${IMAGES_TXT}" ]]; then
+  echo "  No snapshot image list; skipping SBOM OCI publish for ${PKG_NAME}@${PKG_VERSION}"
+  exit 0
+fi
+
+# sha256:dead → sha256_dead, matching npm-extract-artifacts directory names.
+digest_dir_name() {
+  local digest="$1"
+  printf '%s' "${digest//[:\/]/_}"
+}
+
+image_for_tarball() {
+  local file="$1"
+  local dir base want image img_digest
+  dir="$(dirname "${file}")"
+  while [[ "${dir}" != "/" && "${dir}" != "." && -n "${dir}" ]]; do
+    base="$(basename "${dir}")"
+    if [[ "${base}" =~ ^sha256_[0-9a-fA-F]{64}$ ]]; then
+      want="sha256:${base#sha256_}"
+      want="$(printf '%s' "${want}" | tr '[:upper:]' '[:lower:]')"
+      while IFS= read -r image || [[ -n "${image}" ]]; do
+        [[ -n "${image}" ]] || continue
+        img_digest="$(printf '%s' "${image##*@}" | tr '[:upper:]' '[:lower:]')"
+        if [[ "${img_digest}" == "${want}" ]]; then
+          printf '%s' "${image}"
+          return 0
+        fi
+      done < "${IMAGES_TXT}"
+      return 0
+    fi
+    dir="$(dirname "${dir}")"
+  done
+}
+
+snapshot_auth_file() {
+  local image="$1"
+  local auth_json dest
+  if ! command -v select-oci-auth >/dev/null 2>&1; then
+    return 0
+  fi
+  auth_json="$(select-oci-auth "${image}")"
+  if ! jq -e '.auths | length > 0' >/dev/null <<<"${auth_json}"; then
+    return 0
+  fi
+  dest="$(mktemp)"
+  printf '%s\n' "${auth_json}" > "${dest}"
+  printf '%s' "${dest}"
+}
+
+discover_referrers() {
+  local image="$1"
+  local cache_key dest authfile
+  cache_key="$(digest_dir_name "${image##*@}")"
+  dest="${SBOM_CACHE_DIR}/discover/${cache_key}.json"
+  if [[ -f "${dest}" ]]; then
+    cat "${dest}"
+    return 0
+  fi
+  mkdir -p "${SBOM_CACHE_DIR}/discover"
+  authfile="$(snapshot_auth_file "${image}")"
+  local discover_cmd=(oras discover)
+  if [[ -n "${authfile}" ]]; then
+    discover_cmd+=(--registry-config "${authfile}")
+  fi
+  discover_cmd+=("${image}"
+    --artifact-type "${SBOM_ARTIFACT_TYPE}"
+    --format json)
+  if ! "${discover_cmd[@]}" > "${dest}"; then
+    rm -f "${dest}" "${authfile}"
+    echo "ERROR: oras discover failed for ${image}" >&2
+    return 1
+  fi
+  rm -f "${authfile}"
+  cat "${dest}"
+}
+
+pull_referrer() {
+  local image="$1"
+  local reference="$2"
+  local digest="$3"
+  local repo dest authfile
+  repo="${image%@*}"
+  if [[ -z "${reference}" ]]; then
+    reference="${repo}@${digest}"
+  fi
+  dest="${SBOM_CACHE_DIR}/pull/$(digest_dir_name "${digest}")"
+  if [[ -d "${dest}" ]]; then
+    printf '%s' "${dest}"
+    return 0
+  fi
+  mkdir -p "${dest}"
+  authfile="$(snapshot_auth_file "${image}")"
+  local pull_cmd=(oras pull)
+  if [[ -n "${authfile}" ]]; then
+    pull_cmd+=(--registry-config "${authfile}")
+  fi
+  pull_cmd+=("${reference}" -o "${dest}")
+  # oras writes progress to stdout; keep that off the path we return.
+  if ! "${pull_cmd[@]}" >&2; then
+    rm -rf "${dest}"
+    rm -f "${authfile}"
+    echo "ERROR: oras pull failed for ${reference}" >&2
+    return 1
+  fi
+  rm -f "${authfile}"
+  printf '%s' "${dest}"
+}
+
+cdx_matches_package() {
+  local doc="$1"
+  local size
+  size="$(wc -c < "${doc}" | tr -d ' ')"
+  if [[ -z "${size}" || "${size}" -eq 0 || "${size}" -gt "${MAX_SBOM_BYTES}" ]]; then
+    return 1
+  fi
+  jq -e --arg name "${PKG_NAME}" --arg version "${PKG_VERSION}" '
+    .bomFormat == "CycloneDX"
+    and (.metadata.component.name == $name)
+    and (.metadata.component.version == $version)
+  ' "${doc}" >/dev/null 2>&1
+}
+
+collect_matching_sboms() {
+  local image discovered reference digest artifact pull_dir doc hash seen_hashes
+  local -a images=()
+  MATCHED_SBOM=""
+  seen_hashes="|"
+
+  image="$(image_for_tarball "${TGZ_PATH}")"
+  if [[ -n "${image}" ]]; then
+    images=("${image}")
+  else
+    while IFS= read -r image || [[ -n "${image}" ]]; do
+      [[ -n "${image}" ]] || continue
+      images+=("${image}")
+    done < "${IMAGES_TXT}"
+  fi
+  if [[ ${#images[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  for image in "${images[@]}"; do
+    if ! discovered="$(discover_referrers "${image}")"; then
+      return 1
+    fi
+    while IFS=$'\t' read -r reference digest artifact; do
+      [[ -n "${digest}" || -n "${reference}" ]] || continue
+      if [[ -n "${artifact}" && "${artifact}" != "${SBOM_ARTIFACT_TYPE}" ]]; then
+        continue
+      fi
+      if [[ -z "${digest}" && "${reference}" == *"@"* ]]; then
+        digest="${reference##*@}"
+      fi
+      digest="$(normalize_digest "${digest}")"
+      if [[ -z "${digest}" || "${digest}" != sha256:* ]]; then
+        echo "ERROR: CycloneDX referrer on ${image} has no sha256 digest" >&2
+        return 1
+      fi
+      if ! pull_dir="$(pull_referrer "${image}" "${reference}" "${digest}")"; then
+        return 1
+      fi
+      while IFS= read -r -d '' doc; do
+        if ! cdx_matches_package "${doc}"; then
+          continue
+        fi
+        if command -v sha256sum >/dev/null 2>&1; then
+          hash="$(sha256sum "${doc}" | awk '{print $1}')"
+        else
+          hash="$(shasum -a 256 "${doc}" | awk '{print $1}')"
+        fi
+        if [[ "${seen_hashes}" == *"|${hash}|"* ]]; then
+          continue
+        fi
+        seen_hashes="${seen_hashes}|${hash}|"
+        if [[ -n "${MATCHED_SBOM}" ]]; then
+          echo "ERROR: multiple CycloneDX SBOMs match ${PKG_NAME}@${PKG_VERSION}" >&2
+          return 1
+        fi
+        MATCHED_SBOM="${doc}"
+      done < <(find "${pull_dir}" -type f -print0)
+    done < <(jq -r '
+      .referrers[]?
+      | [(.reference // ""), (.digest // ""), (.artifactType // "")]
+      | @tsv
+    ' <<<"${discovered}")
+  done
+}
+
+SBOM_CACHE_DIR="${SBOM_CACHE_DIR:-$(mktemp -d)}"
+mkdir -p "${SBOM_CACHE_DIR}"
+
+if ! collect_matching_sboms; then
+  exit 1
+fi
+if [[ -z "${MATCHED_SBOM}" ]]; then
+  echo "  No CycloneDX referrer for ${PKG_NAME}@${PKG_VERSION}; skipping SBOM OCI publish"
+  exit 0
+fi
+
+OCI_REGISTRY_BASE="${OCI_REGISTRY_BASE:-$(normalize_oci_registry_base "${SBOM_IMAGE_PREFIX}")}"
+IMAGE_REF="${OCI_REGISTRY_BASE}:$(sbom_oci_tag "${PKG_NAME}" "${PKG_VERSION}")"
+
+if ! command -v oras >/dev/null 2>&1; then
+  echo "ERROR: oras not found on PATH" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC2086
+oras_cmd=(oras)
+if [[ -n "${ORAS_OPTIONS:-}" ]]; then
+  # Intentionally word-split ORAS_OPTIONS (same pattern as npm-attestation-publish).
+  # shellcheck disable=SC2206
+  oras_cmd=(oras ${ORAS_OPTIONS})
+fi
+
+SBOM_BASENAME="$(basename "${MATCHED_SBOM}")"
+SBOM_DIR="$(cd "$(dirname "${MATCHED_SBOM}")" && pwd)"
+echo "Pushing SBOM OCI ${IMAGE_REF} (${SBOM_BASENAME})"
+push_out="$(
+  cd "${SBOM_DIR}"
+  "${oras_cmd[@]}" push "${IMAGE_REF}" \
+    --artifact-type "${SBOM_ARTIFACT_TYPE}" \
+    --annotation "org.opencontainers.image.title=npm-package-sbom" \
+    --annotation "dev.lightwell.npm.name=${PKG_NAME}" \
+    --annotation "dev.lightwell.npm.version=${PKG_VERSION}" \
+    "${SBOM_BASENAME}:application/vnd.cyclonedx+json" \
+    2>&1
+)" || {
+  echo "ERROR: oras push failed for ${IMAGE_REF}" >&2
+  echo "${push_out}" >&2
+  exit 1
+}
+echo "${push_out}"
+
+DIGEST=""
+while IFS= read -r line; do
+  if [[ "${line}" =~ ${ORAS_DIGEST_LINE_RE} ]]; then
+    DIGEST="$(normalize_digest "${BASH_REMATCH[1]}")"
+  fi
+done <<< "${push_out}"
+if [[ -z "${DIGEST}" ]]; then
+  resolve_out="$("${oras_cmd[@]}" resolve "${IMAGE_REF}" 2>/dev/null || true)"
+  if [[ "${resolve_out}" == *"@"* ]]; then
+    DIGEST="$(normalize_digest "${resolve_out##*@}")"
+  else
+    DIGEST="$(normalize_digest "${resolve_out}")"
+  fi
+fi
+if [[ -z "${DIGEST}" || "${DIGEST}" != sha256:* ]]; then
+  echo "ERROR: could not resolve SBOM OCI digest for ${IMAGE_REF}" >&2
+  exit 1
+fi
+echo "  SBOM digest: ${DIGEST}"
+
+PULP_BASE_URL="${PULP_BASE_URL:?PULP_BASE_URL required}"
+SECRET_DIR="${SECRET_DIR:-/etc/service-account-secret}"
+PULP_USER="$(< "${SECRET_DIR}/username")"
+PULP_PASS="$(< "${SECRET_DIR}/password")"
+AUTH=(-u "${PULP_USER}:${PULP_PASS}")
+
+content_json="$(curl --fail-with-body --silent \
+  --retry "${CURL_RETRY}" \
+  --max-time "${CURL_MAX_TIME_QUERY_SECONDS}" \
+  "${AUTH[@]}" \
+  "${PULP_BASE_URL}${CONTENT_HREF}")" || {
+  echo "ERROR: failed to read Pulp content for labels: ${CONTENT_HREF}" >&2
+  exit 1
+}
+label_current() {
+  jq -r --arg k "$1" '.pulp_labels[$k] // empty' <<<"${content_json}"
+}
+
+pulp_set_label "${CONTENT_HREF}" "${OCI_REGISTRY_BASE_LABEL}" \
+  "${OCI_REGISTRY_BASE}" "$(label_current "${OCI_REGISTRY_BASE_LABEL}")"
+pulp_set_label "${CONTENT_HREF}" "${SBOM_DIGEST_LABEL}" \
+  "${DIGEST}" "$(label_current "${SBOM_DIGEST_LABEL}")"
+pulp_set_label "${CONTENT_HREF}" "${SBOM_ARTIFACT_TYPE_LABEL}" \
+  "${SBOM_ARTIFACT_TYPE}" "$(label_current "${SBOM_ARTIFACT_TYPE_LABEL}")"
+
+echo "Published SBOM for ${PKG_NAME}@${PKG_VERSION} -> ${OCI_REGISTRY_BASE}@${DIGEST}"

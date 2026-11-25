@@ -11,13 +11,17 @@ spec:
     (or COMPLIANCE_IMAGE_PREFIX) is set, signs adjacent .tgz with cosign
     (generate-and-sign-npm-attestations), pushes attestation OCI to Quay, and
     sets tl.oci_registry_base / tl.attestation_oci_digest /
-    tl.attestation_predicate_type.     Idempotent: skips packages already present
-    with matching sha256. Same name/version with different content fails unless
+    tl.attestation_predicate_type. A matching
+    application/vnd.cyclonedx+json referrer on the snapshot image is pushed
+    to the same Quay prefix and recorded as tl.sbom_oci_digest /
+    tl.sbom_artifact_type. No referrer skips the SBOM. Idempotent: skips
+    packages already present with matching sha256. Same name/version with
+    different content fails unless
     ALLOW_CONTENT_REPLACE=true (then remove → destroy holding versions →
     orphan-cleanup that content href → re-upload). On skip, still applies
-    compliance and attestation labels so reruns can attach metadata. Requires
-    at least one .tgz under FILES_DIR. Business logic runs as npm-release-upload
-    in the slan-cuan image.
+    compliance, attestation, and SBOM labels so reruns can attach metadata.
+    Requires at least one .tgz under FILES_DIR. Business logic runs as
+    npm-release-upload in the slan-cuan image.
   params:
     - name: SERVICE_ACCOUNT_SECRET_NAME
       type: string

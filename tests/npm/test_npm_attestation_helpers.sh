@@ -35,6 +35,12 @@ assert_eq "$(attestation_oci_tag 'pkg' '2.1.0+build.42')" \
   'pkg-2.1.0-build.42-att' 'semver build metadata + sanitized for OCI'
 assert_eq "$(attestation_oci_tag '@scope/pkg' '1.0.0+meta')" \
   'scope--pkg-1.0.0-meta-att' 'scoped name with build metadata sanitized'
+assert_eq "$(sbom_oci_tag 'express' '4.22.0')" \
+  'express-4.22.0-sbom' 'unscoped sbom tag'
+assert_eq "$(sbom_oci_tag '@scope/pkg' '1.2.3')" \
+  'scope--pkg-1.2.3-sbom' 'scoped sbom tag uses -- for /'
+assert_eq "$(sbom_oci_tag 'pkg' '2.1.0+build.42')" \
+  'pkg-2.1.0-build.42-sbom' 'sbom tag sanitizes build metadata'
 assert_eq "${DEFAULT_ATTESTATION_PREDICATE_TYPE}" \
   'https://slsa.dev/provenance/v1' 'shared predicate type default'
 
