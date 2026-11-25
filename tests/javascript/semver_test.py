@@ -139,6 +139,16 @@ class TestSatisfies:
         # And matches ranges that have a prerelease in the spec
         assert satisfies("1.2.3-beta", ">=1.2.3-alpha") is True
 
+    def test_satisfies_prerelease_tuple_must_match_bound(self):
+        """A prerelease bound only counts if its (M,m,p) matches the version.
+
+        Real node-semver: >=1.0.0 <2.0.0-0 does NOT allow 1.2.3-alpha.1
+        through, even though <2.0.0-0 carries a prerelease tag, because
+        that bound's tuple (2, 0, 0) doesn't match the tested version's
+        tuple (1, 2, 3).
+        """
+        assert satisfies("1.2.3-alpha.1", ">=1.0.0 <2.0.0-0") is False
+
     def test_satisfies_prerelease_allowed_when_matching_bound_has_one(self):
         """A prerelease is allowed when the MATCHING bound has one.
 
@@ -182,6 +192,37 @@ class TestSatisfies:
         bound itself has no prerelease tag, so 1.2.3-alpha.1 is excluded.
         """
         assert satisfies("1.2.3-alpha.1", "1.2.3 - 2.0.0") is False
+
+    def test_satisfies_partial_greater_than_expands_last_component(self):
+        """Partial X-range expansion applies to '>' too (>1.2 -> >=1.3.0)."""
+        assert satisfies("1.2.5", ">1.2") is False
+        assert satisfies("1.3.0", ">1.2") is True
+
+    def test_satisfies_partial_greater_than_single_component(self):
+        """Partial X-range expansion applies to '>' with one component."""
+        assert satisfies("1.5.0", ">1") is False
+        assert satisfies("2.0.0", ">1") is True
+
+    def test_satisfies_partial_less_than_or_equal_expands_last_component(self):
+        """Partial X-range expansion applies to '<=' too (<=1.2 -> <1.3.0)."""
+        assert satisfies("1.2.5", "<=1.2") is True
+        assert satisfies("1.3.0", "<=1.2") is False
+
+    def test_satisfies_partial_less_than_or_equal_single_component(self):
+        """Partial X-range expansion applies to '<=' with one component."""
+        assert satisfies("1.5.0", "<=1") is True
+        assert satisfies("2.0.0", "<=1") is False
+
+    def test_satisfies_hyphen_range_partial_upper_bound_expands(self):
+        """Hyphen-range partial upper bound expands like '<=' (free via fix)."""
+        assert satisfies("2.0.5", "1.2.3 - 2.0") is True
+        assert satisfies("2.1.0", "1.2.3 - 2.0") is False
+
+    def test_satisfies_tilde_range_preserves_explicit_prerelease(self):
+        """Tilde ranges keep an explicit prerelease tag on the lower bound."""
+        assert satisfies("1.2.3-beta.1", "~1.2.3-beta.1") is True
+        assert satisfies("1.2.3-beta.0", "~1.2.3-beta.1") is False
+        assert satisfies("1.2.4", "~1.2.3-beta.1") is True
 
     def test_satisfies_invalid_version_returns_false(self):
         """Satisfies returns False for invalid version strings."""

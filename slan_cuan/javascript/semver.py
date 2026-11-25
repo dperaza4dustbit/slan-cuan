@@ -138,6 +138,18 @@ def _caret_bounds(ver: Version) -> tuple[Version, Version]:
     return lower, upper
 
 
+def _bump_last_given(major: int, minor: int, patch: int, wild_at: int) -> Version:
+    """Bump the last explicitly-given component by 1, zero-filling the rest.
+
+    ``wild_at`` is the count of components given before the first omitted
+    / wildcard one (as returned by ``_parse_partial``): 1 means only
+    ``major`` was given, 2 means ``major.minor`` was given.
+    """
+    if wild_at <= 1:
+        return Version("%d.0.0" % (major + 1))
+    return Version("%d.%d.0" % (major, minor + 1))
+
+
 def _tilde_bounds(
     major: int, minor: int, patch: int, wild_at: int
 ) -> tuple[Version, Version]:
@@ -188,10 +200,17 @@ def _token_to_bounds(
         lower, upper = _caret_bounds(ver)
         return [(">=", lower), ("<", upper)]
     if token.startswith("~"):
-        major, minor, patch, wild_at = _parse_partial(token[1:])
+        partial = token[1:]
+        pre = None
+        core = partial
+        if "-" in partial.split("+", 1)[0]:
+            core, pre_s = partial.split("+", 1)[0].split("-", 1)
+            pre = tuple(pre_s.split("."))
+        major, minor, patch, wild_at = _parse_partial(core)
         if wild_at == 0:
             return [("*", None)]
         lower, upper = _tilde_bounds(major, minor, patch, wild_at)
+        lower.prerelease = pre
         return [(">=", lower), ("<", upper)]
     m = re.match(r"^(>=|<=|>|<|=)?\s*(.+)$", token)
     if not m:
@@ -211,6 +230,10 @@ def _token_to_bounds(
             (">=", Version("%d.%d.0" % (major, minor))),
             ("<", Version("%d.%d.0" % (major, minor + 1))),
         ]
+    if 0 < wild_at < 3 and op == ">":
+        return [(">=", _bump_last_given(major, minor, patch, wild_at))]
+    if 0 < wild_at < 3 and op == "<=":
+        return [("<", _bump_last_given(major, minor, patch, wild_at))]
     ver = Version("%d.%d.%d" % (major, minor, patch))
     if "-" in rest.split("+", 1)[0]:
         pre = rest.split("+", 1)[0].split("-", 1)[1]
@@ -237,10 +260,22 @@ def _cmp_op(version: Version, op: str, bound: Version | None) -> bool:
 
 def _clause_allows_prerelease(
     comparators: list[tuple[str, Version | None]],
+    version_tuple: tuple[int, int, int],
 ) -> bool:
-    """Check if any comparator bound in the clause carries a prerelease tag."""
+    """Check if a comparator bound shares the version's own tuple.
+
+    Per real npm/node-semver semantics, a prerelease version only
+    satisfies a range if the range contains a comparator bound that both
+    carries a prerelease tag AND has the same (major, minor, patch) as
+    the version under test -- not merely any prerelease bound anywhere
+    in the clause.
+    """
     for op, bound in comparators:
-        if bound is not None and bound.prerelease:
+        if (
+            bound is not None
+            and bound.prerelease
+            and bound.tuple() == version_tuple
+        ):
             return True
     return False
 
@@ -262,7 +297,7 @@ def satisfies(version_text: str, spec: str) -> bool:
                 comparators.extend(_token_to_bounds(token))
         except (TypeError, ValueError):
             continue
-        allow_pre = _clause_allows_prerelease(comparators)
+        allow_pre = _clause_allows_prerelease(comparators, version.tuple())
         if version.prerelease and not allow_pre:
             continue
         if all(_cmp_op(version, op, bound) for op, bound in comparators):
