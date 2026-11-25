@@ -28,7 +28,8 @@ def assert_tar_member_size(archive: Path, member: str, max_bytes: int) -> None:
         max_bytes: Maximum allowed size in bytes.
 
     Raises:
-        click.ClickException: If the member is missing, empty, or too large.
+        click.ClickException: If the archive can't be opened/read, or the
+            member is missing, empty, or too large.
 
     """
     try:
@@ -52,6 +53,8 @@ def assert_tar_member_size(archive: Path, member: str, max_bytes: int) -> None:
         raise click.ClickException(
             f"Member '{member}' not found in archive {archive}"
         ) from e
+    except (tarfile.TarError, OSError, EOFError) as e:
+        raise click.ClickException(f"Cannot read archive {archive}: {e}") from e
 
 
 def read_package_metadata(
@@ -67,9 +70,9 @@ def read_package_metadata(
         Tuple of (name, version) strings.
 
     Raises:
-        click.ClickException: If the tarball lacks package.json, the JSON
-            is malformed, or required fields (name, version) are missing
-            or empty.
+        click.ClickException: If the archive can't be opened/read, lacks
+            package.json, the JSON is malformed, or required fields
+            (name, version) are missing or empty.
 
     """
     # Open tarball once: check size, extract, and parse JSON in one pass.
@@ -104,6 +107,8 @@ def read_package_metadata(
         raise click.ClickException(
             f"Member 'package/package.json' not found in archive {tgz_path}"
         ) from e
+    except (tarfile.TarError, OSError, EOFError) as e:
+        raise click.ClickException(f"Cannot read archive {tgz_path}: {e}") from e
 
     # Validate required fields.
     name = content.get("name")

@@ -160,6 +160,32 @@ def empty_version_tgz(tmp_path: Path) -> Path:
     return tgz_path
 
 
+@pytest.fixture
+def not_a_gzip_tgz(tmp_path: Path) -> Path:
+    """Create a file with a .tgz extension that isn't gzip at all."""
+    tgz_path = tmp_path / "not_a_gzip.tgz"
+    tgz_path.write_bytes(b"this is definitely not a tarball" * 5)
+    return tgz_path
+
+
+@pytest.fixture
+def truncated_tgz(tmp_path: Path) -> Path:
+    """Create a valid tgz, then truncate it to simulate a partial download."""
+    tgz_path = tmp_path / "truncated.tgz"
+    package_json_content = json.dumps(
+        {"name": "test-package", "version": "1.0.0"}
+    ).encode()
+
+    with tarfile.open(tgz_path, "w:gz") as tar:
+        info = tarfile.TarInfo(name="package/package.json")
+        info.size = len(package_json_content)
+        tar.addfile(info, io.BytesIO(package_json_content))
+
+    data = tgz_path.read_bytes()
+    tgz_path.write_bytes(data[: len(data) // 2])
+    return tgz_path
+
+
 class TestAssertTarMemberSize:
     """Tests for the assert_tar_member_size function."""
 
@@ -185,6 +211,20 @@ class TestAssertTarMemberSize:
         """Should raise ClickException when member exceeds max_bytes."""
         with pytest.raises(click.ClickException):
             assert_tar_member_size(oversized_tgz, "package/package.json", 100)
+
+    def test_raises_for_non_gzip_archive(self, not_a_gzip_tgz: Path) -> None:
+        """Should raise ClickException for a non-gzip/tar file."""
+        with pytest.raises(click.ClickException):
+            assert_tar_member_size(
+                not_a_gzip_tgz, "package/package.json", 1_000_000
+            )
+
+    def test_raises_for_truncated_archive(self, truncated_tgz: Path) -> None:
+        """Should raise ClickException for a truncated archive."""
+        with pytest.raises(click.ClickException):
+            assert_tar_member_size(
+                truncated_tgz, "package/package.json", 1_000_000
+            )
 
 
 class TestReadPackageMetadata:
@@ -238,3 +278,13 @@ class TestReadPackageMetadata:
         """Should respect the max_package_json_bytes parameter."""
         with pytest.raises(click.ClickException):
             read_package_metadata(oversized_tgz, max_package_json_bytes=100)
+
+    def test_raises_on_non_gzip_archive(self, not_a_gzip_tgz: Path) -> None:
+        """Should raise ClickException for a non-gzip/tar file."""
+        with pytest.raises(click.ClickException):
+            read_package_metadata(not_a_gzip_tgz)
+
+    def test_raises_on_truncated_archive(self, truncated_tgz: Path) -> None:
+        """Should raise ClickException for a truncated archive."""
+        with pytest.raises(click.ClickException):
+            read_package_metadata(truncated_tgz)
